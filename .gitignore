@@ -1,0 +1,26 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.dill
+*.track.dill
+
+# Windows build artifacts
+windows/flutter/ephemeral/
+**/Debug/
+**/Release/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 本地调试工具（截图脚本，不入仓库）
+screenshots/capture.ps1
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
