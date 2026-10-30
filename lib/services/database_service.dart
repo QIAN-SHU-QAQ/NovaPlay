@@ -29,6 +29,17 @@ class DatabaseService {
     _prefs ??= await SharedPreferences.getInstance();
   }
 
+  /// 从磁盘重新加载：独立播放进程写入的历史/收藏，主进程需要主动刷新。
+  Future<void> reloadFromDisk() async {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    try {
+      await prefs.reload();
+    } catch (e) {
+      debugPrint('重新加载本地数据失败: $e');
+    }
+  }
+
   /// 仅测试用：丢弃缓存的 prefs 实例，并清空写队列（避免跨测试挂起的 Future）。
   @visibleForTesting
   void resetForTest() {
