@@ -1,105 +1,108 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-/// 桌面端骨架：左侧 NavigationRail + 内容区圆角面板浮在底色上。
-/// 分支顺序与 routes.dart 的 shell branches 一一对应（设置固定为最后一个分支）。
+/// Branch indices follow routes.dart. Search is a full-window route.
 class MainScaffold extends StatelessWidget {
-  final StatefulNavigationShell navigationShell;
-
   const MainScaffold({super.key, required this.navigationShell});
-
-  static const _settingsIndex = 4;
+  final StatefulNavigationShell navigationShell;
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final currentIndex = navigationShell.currentIndex;
-
+    final colors = Theme.of(context).colorScheme;
+    final current = navigationShell.currentIndex;
+    void go(int index) =>
+        navigationShell.goBranch(index, initialLocation: index == current);
     return Scaffold(
-      backgroundColor: colorScheme.surfaceContainer,
       body: SafeArea(
         child: Row(
           children: [
-            NavigationRail(
-              // 设置是自定义置底项（不在 destinations 里）：
-              // 停在设置分支时传 null，避免 selectedIndex 越界（release 下会灰屏）
-              selectedIndex:
-                  currentIndex < _settingsIndex ? currentIndex : null,
-              onDestinationSelected: (index) => navigationShell.goBranch(
-                index,
-                initialLocation: index == navigationShell.currentIndex,
-              ),
-              labelType: NavigationRailLabelType.all,
-              groupAlignment: -1.0,
-              leading: Padding(
-                padding: const EdgeInsets.only(top: 4, bottom: 16),
-                child: _RailLogo(colorScheme: colorScheme),
-              ),
-              destinations: const [
-                NavigationRailDestination(
-                  icon: Icon(Icons.explore_outlined),
-                  selectedIcon: Icon(Icons.explore),
-                  label: Text('首页'),
-                ),
-                NavigationRailDestination(
-                  icon: Icon(Icons.favorite_border_rounded),
-                  selectedIcon: Icon(Icons.favorite_rounded),
-                  label: Text('收藏'),
-                ),
-                NavigationRailDestination(
-                  icon: Icon(Icons.download_outlined),
-                  selectedIcon: Icon(Icons.download_rounded),
-                  label: Text('下载'),
-                ),
-                NavigationRailDestination(
-                  icon: Icon(Icons.history_rounded),
-                  selectedIcon: Icon(Icons.history),
-                  label: Text('历史'),
-                ),
-              ],
-              // 设置置底：trailing 占满剩余空间，把入口推到导航栏最下
-              trailing: Expanded(
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: Padding(
-                    padding: const EdgeInsets.only(bottom: 16),
-                    child: _RailSettingsItem(
-                      selected: currentIndex == _settingsIndex,
-                      colorScheme: colorScheme,
-                      onTap: () => navigationShell.goBranch(
-                        _settingsIndex,
-                        initialLocation: currentIndex == _settingsIndex,
+            SizedBox(
+              width: 184,
+              child: ColoredBox(
+                color: colors.surfaceContainerLow,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 29, 8, 31),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.play_arrow_rounded,
+                              color: colors.primary,
+                              size: 26,
+                            ),
+                            const SizedBox(width: 7),
+                            Expanded(
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  'NovaPlay',
+                                  style: TextStyle(
+                                    fontSize: 19,
+                                    fontWeight: FontWeight.w600,
+                                    letterSpacing: -0.7,
+                                    color: colors.onSurface,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(0, 8, 8, 8),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: colorScheme.surface,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                      color: colorScheme.outlineVariant.withValues(alpha: 0.4),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: colorScheme.shadow.withValues(alpha: 0.08),
-                        blurRadius: 16,
-                        offset: const Offset(0, 2),
+                      _NavigationItem(
+                        icon: Icons.search_rounded,
+                        label: '搜索',
+                        onTap: () => context.push('/search'),
                       ),
+                      const SizedBox(height: 25),
+                      _NavigationItem(
+                        icon: Icons.grid_view_outlined,
+                        label: '发现',
+                        selected: current == 0,
+                        onTap: () => go(0),
+                      ),
+                      const SizedBox(height: 5),
+                      _NavigationItem(
+                        icon: Icons.favorite_border_rounded,
+                        label: '收藏',
+                        selected: current == 1,
+                        onTap: () => go(1),
+                      ),
+                      const SizedBox(height: 5),
+                      _NavigationItem(
+                        icon: Icons.history_rounded,
+                        label: '历史',
+                        selected: current == 3,
+                        onTap: () => go(3),
+                      ),
+                      const SizedBox(height: 5),
+                      _NavigationItem(
+                        icon: Icons.download_outlined,
+                        label: '下载',
+                        selected: current == 2,
+                        onTap: () => go(2),
+                      ),
+                      const Spacer(),
+                      Divider(color: colors.outlineVariant),
+                      const SizedBox(height: 12),
+                      _NavigationItem(
+                        icon: Icons.settings_outlined,
+                        label: '设置',
+                        selected: current == 4,
+                        onTap: () => go(4),
+                      ),
+                      const SizedBox(height: 18),
                     ],
                   ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(16),
-                    child: navigationShell,
-                  ),
                 ),
               ),
             ),
+            VerticalDivider(width: 1, color: colors.outlineVariant),
+            Expanded(child: navigationShell),
           ],
         ),
       ),
@@ -107,81 +110,57 @@ class MainScaffold extends StatelessWidget {
   }
 }
 
-class _RailLogo extends StatelessWidget {
-  final ColorScheme colorScheme;
-
-  const _RailLogo({required this.colorScheme});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 40,
-      height: 40,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [colorScheme.primary, colorScheme.tertiary],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: const Icon(
-        Icons.play_arrow_rounded,
-        color: Colors.white,
-        size: 26,
-      ),
-    );
-  }
-}
-
-/// 设置入口：仿 rail destination 样式（指示胶囊 + 图标 + 文字），固定在栏底
-class _RailSettingsItem extends StatelessWidget {
-  final bool selected;
-  final ColorScheme colorScheme;
-  final VoidCallback onTap;
-
-  const _RailSettingsItem({
-    required this.selected,
-    required this.colorScheme,
+class _NavigationItem extends StatelessWidget {
+  const _NavigationItem({
+    required this.icon,
+    required this.label,
     required this.onTap,
+    this.selected = false,
   });
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
-    final iconColor = selected
-        ? colorScheme.onPrimaryContainer
-        : colorScheme.onSurfaceVariant;
-    final labelColor =
-        selected ? colorScheme.onSurface : colorScheme.onSurfaceVariant;
-
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-            decoration: BoxDecoration(
-              color: selected
-                  ? colorScheme.primaryContainer
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              selected ? Icons.settings_rounded : Icons.settings_outlined,
-              color: iconColor,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            '设置',
-            style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: labelColor,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+    final colors = Theme.of(context).colorScheme;
+    return Semantics(
+      selected: selected,
+      button: true,
+      child: Material(
+        color: selected ? colors.primaryContainer : Colors.transparent,
+        borderRadius: BorderRadius.circular(6),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(6),
+          mouseCursor: SystemMouseCursors.click,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+            child: Row(
+              children: [
+                Icon(
+                  icon,
+                  size: 19,
+                  color:
+                      selected
+                          ? colors.onPrimaryContainer
+                          : colors.onSurfaceVariant,
                 ),
+                const SizedBox(width: 12),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color:
+                        selected ? colors.onPrimaryContainer : colors.onSurface,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ],
+        ),
       ),
     );
   }

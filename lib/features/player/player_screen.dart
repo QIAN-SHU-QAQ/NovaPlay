@@ -530,21 +530,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                 ),
               ],
 
-              // 发弹幕占位（Phase 4 接入）
+              // 弹幕尚未接入，保留入口并明确禁用。
               IconButton(
-                tooltip: '发弹幕（即将上线）',
+                tooltip: '弹幕尚未开放',
                 icon: Icon(
                   Icons.subtitles_outlined,
                   color: Colors.white.withValues(alpha: 0.55),
                 ),
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('弹幕功能即将上线（Phase 4）'),
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
-                },
+                onPressed: null,
               ),
 
               const Spacer(),
@@ -629,7 +622,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return PopupMenuButton<double>(
       tooltip: '倍速',
       initialValue: current,
-      color: const Color(0xFF2B2830),
+      color: _playerTheme.colorScheme.surfaceContainerHigh,
       onSelected: (rate) => _player.setRate(rate),
       itemBuilder:
           (context) => [
@@ -681,7 +674,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         final volume = snap.data ?? 100.0;
         return PopupMenuButton<void>(
           tooltip: '音量',
-          color: const Color(0xFF2B2830),
+          color: _playerTheme.colorScheme.surfaceContainerHigh,
           icon: Icon(
             volume <= 0
                 ? Icons.volume_off_rounded
@@ -753,164 +746,127 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     );
   }
 
-  /// 右侧面板：弹幕来源卡占位 + 选集网格
   Widget _buildRightPanel() {
-    final colorScheme = _playerTheme.colorScheme;
+    final colors = _playerTheme.colorScheme;
     final episodes = widget.episodes ?? const [];
-
     return Container(
-      width: 320,
-      color: colorScheme.surfaceContainerLow,
+      width: 280,
+      color: colors.surfaceContainerLow,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 弹幕来源卡占位
           Padding(
-            padding: const EdgeInsets.all(12),
-            child: Card(
-              margin: EdgeInsets.zero,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 12,
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
+            child: Row(
+              children: [
+                Text(
+                  episodes.isEmpty ? '选集' : '选集 (${episodes.length})',
+                  style: _playerTheme.textTheme.titleSmall?.copyWith(
+                    color: colors.onSurface,
+                  ),
                 ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.subtitles_outlined,
-                      size: 20,
-                      color: colorScheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '弹幕来源',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: colorScheme.onSurface,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '弹弹play 未接入 · Phase 4',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    SizedBox(
-                      height: 24,
-                      child: Switch(
-                        value: false,
-                        onChanged: null, // 占位：弹幕服务未接入
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+                const Spacer(),
+                if (episodes.isNotEmpty)
+                  Text(
+                    '${_currentIndex + 1} / ${episodes.length}',
+                    style: _playerTheme.textTheme.bodySmall,
+                  ),
+              ],
             ),
           ),
-
-          // 选集标题
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-            child: Text(
-              episodes.isEmpty ? '选集' : '选集 (${episodes.length})',
-              style: _playerTheme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w600,
-                color: colorScheme.onSurface,
-              ),
-            ),
-          ),
-
-          // 选集网格
+          Divider(color: colors.outlineVariant),
           Expanded(
             child:
                 episodes.isEmpty
                     ? Center(
                       child: Text(
                         '单集播放',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: colorScheme.onSurfaceVariant,
-                        ),
+                        style: _playerTheme.textTheme.bodySmall,
                       ),
                     )
                     : GridView.builder(
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                      padding: const EdgeInsets.all(16),
                       gridDelegate:
-                          const SliverGridDelegateWithMaxCrossAxisExtent(
-                            maxCrossAxisExtent: 140,
-                            mainAxisSpacing: 8,
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            mainAxisExtent: 44,
                             crossAxisSpacing: 8,
-                            childAspectRatio: 1.55,
+                            mainAxisSpacing: 8,
                           ),
                       itemCount: episodes.length,
                       itemBuilder: (context, index) {
-                        final isCurrent = index == _currentIndex;
-                        return GestureDetector(
-                          onTap: () => _playEpisode(index),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color:
-                                  isCurrent
-                                      ? colorScheme.primaryContainer
-                                      : colorScheme.surfaceContainerHigh,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
+                        final current = index == _currentIndex;
+                        final title =
+                            episodes[index]['title'] ?? '第 ${index + 1} 集';
+                        return Tooltip(
+                          message: title,
+                          child: Material(
+                            color:
+                                current
+                                    ? colors.primaryContainer
+                                    : Colors.transparent,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(5),
+                              side: BorderSide(
                                 color:
-                                    isCurrent
-                                        ? colorScheme.primary
-                                        : Colors.transparent,
-                                width: 1.5,
+                                    current
+                                        ? colors.primary
+                                        : colors.outlineVariant,
                               ),
                             ),
-                            padding: const EdgeInsets.symmetric(horizontal: 10),
-                            alignment: Alignment.centerLeft,
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '第 ${index + 1} 集',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color:
-                                        isCurrent
-                                            ? colorScheme.onPrimaryContainer
-                                            : colorScheme.onSurface,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(5),
+                              onTap: () => _playEpisode(index),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
                                 ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  episodes[index]['title'] ?? '',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color:
-                                        isCurrent
-                                            ? colorScheme.onPrimaryContainer
-                                                .withValues(alpha: 0.8)
-                                            : colorScheme.onSurfaceVariant,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
+                                child: Row(
+                                  children: [
+                                    if (current) ...[
+                                      Icon(
+                                        Icons.play_arrow_rounded,
+                                        size: 15,
+                                        color: colors.onPrimaryContainer,
+                                      ),
+                                      const SizedBox(width: 5),
+                                    ],
+                                    Expanded(
+                                      child: Text(
+                                        title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          color:
+                                              current
+                                                  ? colors.onPrimaryContainer
+                                                  : colors.onSurface,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ],
+                              ),
                             ),
                           ),
                         );
                       },
                     ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.subtitles_outlined,
+                  size: 16,
+                  color: colors.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Text('弹幕尚未开放', style: _playerTheme.textTheme.bodySmall),
+              ],
+            ),
           ),
         ],
       ),

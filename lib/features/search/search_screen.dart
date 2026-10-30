@@ -3,14 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
-import '../../core/config/theme.dart';
 import '../../models/video_model.dart';
 import '../../providers/search_provider.dart';
 import '../../services/database_service.dart';
 import '../../shared/widgets/poster_card.dart';
 
 /// 全屏搜索页（覆盖整个窗口，不走 Rail shell）：
-/// 胶囊搜索框 + 筛选 chips + 结果计数 + 海报/列表视图切换。
+/// 搜索框 + 筛选 chips + 结果计数 + 海报/列表视图切换。
 class SearchScreen extends ConsumerStatefulWidget {
   const SearchScreen({super.key});
 
@@ -85,28 +84,34 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     if (_genreFilter != null && !genres.contains(_genreFilter)) {
       _genreFilter = null;
     }
-    final filtered = _genreFilter == null
-        ? searchState.results
-        : searchState.results
-            .where((v) =>
-                v.genre != null &&
-                v.genre!.split(RegExp(r'[,，/、|]')).contains(_genreFilter))
-            .toList();
+    final filtered =
+        _genreFilter == null
+            ? searchState.results
+            : searchState.results
+                .where(
+                  (v) =>
+                      v.genre != null &&
+                      v.genre!
+                          .split(RegExp(r'[,，/、|]'))
+                          .map((part) => part.trim())
+                          .contains(_genreFilter),
+                )
+                .toList();
 
     return Scaffold(
       body: SafeArea(
         child: Column(
           children: [
-            // 顶部：返回 + 胶囊搜索框 + 搜索按钮
+            // 顶部：返回 + 搜索框 + 搜索按钮
             Padding(
               padding: const EdgeInsets.fromLTRB(8, 12, 8, 4),
               child: Row(
                 children: [
                   IconButton(
                     icon: const Icon(Icons.arrow_back_rounded),
-                    onPressed: () => context.canPop()
-                        ? context.pop()
-                        : context.go('/'),
+                    onPressed:
+                        () =>
+                            context.canPop() ? context.pop() : context.go('/'),
                   ),
                   Expanded(
                     child: Center(
@@ -114,6 +119,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                         constraints: const BoxConstraints(maxWidth: 640),
                         child: TextField(
                           controller: _searchController,
+                          autofocus: true,
                           focusNode: _searchFocus,
                           textInputAction: TextInputAction.search,
                           onSubmitted: _performSearch,
@@ -146,38 +152,60 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                     Expanded(
                       child: SizedBox(
                         height: 40,
-                        child: genres.isEmpty
-                            ? const SizedBox.shrink()
-                            : ListView(
-                                scrollDirection: Axis.horizontal,
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 8),
-                                children: [
-                                  Padding(
-                                    padding: const EdgeInsets.only(right: 8),
-                                    child: FilterChip(
-                                      label: const Text('全部'),
-                                      selected: _genreFilter == null,
-                                      onSelected: (_) =>
-                                          setState(() => _genreFilter = null),
-                                    ),
+                        child:
+                            genres.isEmpty
+                                ? const SizedBox.shrink()
+                                : ListView(
+                                  scrollDirection: Axis.horizontal,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
                                   ),
-                                  for (final genre in genres)
+                                  children: [
                                     Padding(
-                                      padding:
-                                          const EdgeInsets.only(right: 8),
+                                      padding: const EdgeInsets.only(right: 8),
                                       child: FilterChip(
-                                        label: Text(genre),
-                                        selected: _genreFilter == genre,
-                                        onSelected: (_) => setState(() =>
-                                            _genreFilter =
-                                                _genreFilter == genre
-                                                    ? null
-                                                    : genre),
+                                        showCheckmark: false,
+                                        visualDensity: VisualDensity.compact,
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            6,
+                                          ),
+                                        ),
+                                        label: const Text('全部'),
+                                        selected: _genreFilter == null,
+                                        onSelected:
+                                            (_) => setState(
+                                              () => _genreFilter = null,
+                                            ),
                                       ),
                                     ),
-                                ],
-                              ),
+                                    for (final genre in genres)
+                                      Padding(
+                                        padding: const EdgeInsets.only(
+                                          right: 8,
+                                        ),
+                                        child: FilterChip(
+                                          showCheckmark: false,
+                                          visualDensity: VisualDensity.compact,
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              6,
+                                            ),
+                                          ),
+                                          label: Text(genre),
+                                          selected: _genreFilter == genre,
+                                          onSelected:
+                                              (_) => setState(
+                                                () =>
+                                                    _genreFilter =
+                                                        _genreFilter == genre
+                                                            ? null
+                                                            : genre,
+                                              ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
                       ),
                     ),
                     Text(
@@ -194,8 +222,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                             ? Icons.view_list_outlined
                             : Icons.grid_view_outlined,
                       ),
-                      onPressed: () =>
-                          setState(() => _showAsGrid = !_showAsGrid),
+                      onPressed:
+                          () => setState(() => _showAsGrid = !_showAsGrid),
                     ),
                   ],
                 ),
@@ -203,25 +231,27 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             ],
 
             Expanded(
-              child: searchState.isLoading
-                  ? const Center(child: CircularProgressIndicator())
-                  : searchState.results.isNotEmpty
+              child:
+                  searchState.isLoading
+                      ? const Center(child: CircularProgressIndicator())
+                      : searchState.results.isNotEmpty
                       ? (filtered.isEmpty && _genreFilter != null)
                           ? Center(
-                              child: Text(
-                                '该筛选下暂无结果',
-                                style: TextStyle(
-                                    color: colorScheme.onSurfaceVariant),
+                            child: Text(
+                              '该筛选下暂无结果',
+                              style: TextStyle(
+                                color: colorScheme.onSurfaceVariant,
                               ),
-                            )
+                            ),
+                          )
                           : _showAsGrid
-                              ? _buildPosterGrid(context, filtered)
-                              : _buildResultList(context, filtered)
+                          ? _buildPosterGrid(context, filtered)
+                          : _buildResultList(context, filtered)
                       : searchState.error != null
-                          ? _buildError(context, searchState.error!)
-                          : searchState.keyword.isNotEmpty
-                              ? _buildNoResults(context, searchState.keyword)
-                              : _buildSearchSuggestions(context),
+                      ? _buildError(context, searchState.error!)
+                      : searchState.keyword.isNotEmpty
+                      ? _buildNoResults(context, searchState.keyword)
+                      : _buildSearchSuggestions(context),
             ),
           ],
         ),
@@ -240,7 +270,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           children: [
             Icon(
               Icons.search_off_rounded,
-              size: 56,
+              size: 28,
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
             const SizedBox(height: 16),
@@ -257,18 +287,17 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     return GridView.builder(
       padding: const EdgeInsets.all(16),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 168,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        childAspectRatio: 0.62,
+        maxCrossAxisExtent: 180,
+        mainAxisSpacing: 24,
+        crossAxisSpacing: 16,
+        childAspectRatio: 0.57,
       ),
       itemCount: results.length,
       itemBuilder: (context, index) {
         final video = results[index];
         return PosterCard(
           video: video,
-          onTap: () =>
-              context.push('/detail/${Uri.encodeComponent(video.id)}'),
+          onTap: () => context.push('/detail/${Uri.encodeComponent(video.id)}'),
         );
       },
     );
@@ -288,9 +317,11 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             final cover = video.cover;
             return Card(
               child: InkWell(
-                borderRadius: BorderRadius.circular(16),
-                onTap: () => context
-                    .push('/detail/${Uri.encodeComponent(video.id)}'),
+                borderRadius: BorderRadius.circular(6),
+                onTap:
+                    () => context.push(
+                      '/detail/${Uri.encodeComponent(video.id)}',
+                    ),
                 child: Padding(
                   padding: const EdgeInsets.all(10),
                   child: Row(
@@ -303,21 +334,24 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                           borderRadius: BorderRadius.circular(8),
                         ),
                         clipBehavior: Clip.antiAlias,
-                        child: cover != null && cover.isNotEmpty
-                            ? CachedNetworkImage(
-                                imageUrl: cover.startsWith('http')
-                                    ? cover
-                                    : 'https://yhdm.me$cover',
-                                fit: BoxFit.cover,
-                                errorWidget: (context, url, error) => Icon(
+                        child:
+                            cover != null && cover.isNotEmpty
+                                ? CachedNetworkImage(
+                                  imageUrl:
+                                      cover.startsWith('http')
+                                          ? cover
+                                          : 'https://yhdm.me$cover',
+                                  fit: BoxFit.cover,
+                                  errorWidget:
+                                      (context, url, error) => Icon(
+                                        Icons.movie_outlined,
+                                        color: colorScheme.onSurfaceVariant,
+                                      ),
+                                )
+                                : Icon(
                                   Icons.movie_outlined,
                                   color: colorScheme.onSurfaceVariant,
                                 ),
-                              )
-                            : Icon(
-                                Icons.movie_outlined,
-                                color: colorScheme.onSurfaceVariant,
-                              ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -328,9 +362,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                               video.title,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleSmall
+                              style: Theme.of(context).textTheme.titleSmall
                                   ?.copyWith(fontWeight: FontWeight.w600),
                             ),
                             if (video.year != null || video.genre != null)
@@ -395,10 +427,9 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                 children: [
                   Text(
                     '搜索历史',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleMedium
-                        ?.copyWith(fontWeight: FontWeight.bold),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   TextButton(
                     onPressed: () {
@@ -416,55 +447,50 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
-                children: _searchHistory.map((query) {
-                  return InputChip(
-                    label: Text(query),
-                    onPressed: () {
-                      _searchController.text = query;
-                      _performSearch(query);
-                    },
-                    onDeleted: () {
-                      setState(() => _searchHistory.remove(query));
-                      _persistHistory();
-                    },
-                  );
-                }).toList(),
+                children:
+                    _searchHistory.map((query) {
+                      return InputChip(
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        label: Text(query),
+                        onPressed: () {
+                          _searchController.text = query;
+                          _performSearch(query);
+                        },
+                        onDeleted: () {
+                          setState(() => _searchHistory.remove(query));
+                          _persistHistory();
+                        },
+                      );
+                    }).toList(),
               ),
               const SizedBox(height: 28),
             ],
             Text(
               '热门搜索',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.bold),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: _hotSearches.asMap().entries.map((entry) {
-                final index = entry.key;
-                final query = entry.value;
-                return ActionChip(
-                  avatar: index < 3
-                      ? Icon(
-                          Icons.local_fire_department,
-                          size: 16,
-                          color: index == 0
-                              ? colorScheme.error
-                              : index == 1
-                                  ? context.nova.warning
-                                  : colorScheme.primary,
-                        )
-                      : null,
-                  label: Text(query),
-                  onPressed: () {
-                    _searchController.text = query;
-                    _performSearch(query);
-                  },
-                );
-              }).toList(),
+              children:
+                  _hotSearches.asMap().entries.map((entry) {
+                    final query = entry.value;
+                    return ActionChip(
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      label: Text(query),
+                      onPressed: () {
+                        _searchController.text = query;
+                        _performSearch(query);
+                      },
+                    );
+                  }).toList(),
             ),
           ],
         ),
@@ -490,16 +516,13 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         children: [
           Icon(
             Icons.error_outline,
-            size: 64,
+            size: 28,
             color: colorScheme.onSurfaceVariant,
           ),
           const SizedBox(height: 16),
           Text(
             '搜索失败',
-            style: TextStyle(
-              fontSize: 18,
-              color: colorScheme.onSurfaceVariant,
-            ),
+            style: TextStyle(fontSize: 15, color: colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: 8),
           Text(
@@ -511,9 +534,10 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           ),
           const SizedBox(height: 16),
           FilledButton(
-            onPressed: () => ref
-                .read(searchProvider.notifier)
-                .search(ref.read(searchProvider).keyword),
+            onPressed:
+                () => ref
+                    .read(searchProvider.notifier)
+                    .search(ref.read(searchProvider).keyword),
             child: const Text('重试'),
           ),
         ],

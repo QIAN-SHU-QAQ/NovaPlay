@@ -14,40 +14,47 @@ class CategoryTabs extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return SizedBox(
-      height: 40,
-      child: ListView.builder(
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      height: 44,
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+      ),
+      child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
         itemCount: categories.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 20),
         itemBuilder: (context, index) {
           final category = categories[index];
-          final isSelected = category == selectedCategory;
-
-          return Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: GestureDetector(
+          final selected = category == selectedCategory;
+          return Semantics(
+            selected: selected,
+            button: true,
+            child: InkWell(
               onTap: () => onCategorySelected(category),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                decoration: BoxDecoration(
-                  color: isSelected
-                      ? colorScheme.primary
-                      : colorScheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(20),
-                ),
+              focusColor: colors.primary.withValues(alpha: 0.16),
+              hoverColor: colors.primary.withValues(alpha: 0.08),
+              child: Container(
                 alignment: Alignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                decoration: BoxDecoration(
+                  border: Border(
+                    bottom: BorderSide(
+                      color:
+                          selected
+                              ? colors.primary
+                              : colors.outlineVariant.withValues(alpha: 0),
+                      width: 2,
+                    ),
+                  ),
+                ),
                 child: Text(
                   category,
                   style: TextStyle(
-                    color: isSelected
-                        ? colorScheme.onPrimary
-                        : colorScheme.onSurfaceVariant,
+                    color:
+                        selected ? colors.onSurface : colors.onSurfaceVariant,
                     fontSize: 14,
-                    fontWeight:
-                        isSelected ? FontWeight.w600 : FontWeight.normal,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
                   ),
                 ),
               ),

@@ -31,39 +31,47 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_rounded),
-          onPressed: () =>
-              context.canPop() ? context.pop() : context.go('/'),
+          onPressed: () => context.canPop() ? context.pop() : context.go('/'),
         ),
       ),
       body: videoDetail.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stack) => Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.error_outline,
-                  size: 64, color: Theme.of(context).colorScheme.onSurfaceVariant),
-              const SizedBox(height: 16),
-              Text('加载失败',
-                  style: TextStyle(
+        error:
+            (error, stack) => Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.error_outline,
+                    size: 28,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    '加载失败',
+                    style: TextStyle(
                       fontSize: 18,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant)),
-              const SizedBox(height: 8),
-              Text(error.toString(),
-                  style: TextStyle(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurfaceVariant
-                          .withValues(alpha: 0.7))),
-              const SizedBox(height: 16),
-              FilledButton(
-                onPressed: () =>
-                    ref.invalidate(videoDetailProvider(widget.id)),
-                child: const Text('重试'),
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    error.toString(),
+                    style: TextStyle(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed:
+                        () => ref.invalidate(videoDetailProvider(widget.id)),
+                    child: const Text('重试'),
+                  ),
+                ],
               ),
-            ],
-          ),
-        ),
+            ),
         data: (video) => _buildThreeColumns(video),
       ),
     );
@@ -76,14 +84,25 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
     final showDataColumn =
         bangumi != null && (bangumi.score != null || bangumi.staff.isNotEmpty);
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildPosterColumn(video),
-        Expanded(child: _buildInfoColumn(video, bangumi)),
-        // 数据列：Bangumi 有数据才出现（静默降级双栏）
-        if (showDataColumn) _buildDataColumn(bangumi),
-      ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 1200;
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (constraints.maxWidth >= 600) _buildPosterColumn(video),
+            Expanded(
+              child: _buildInfoColumn(
+                video,
+                bangumi,
+                showInlineData: !wide && showDataColumn,
+                showPoster: constraints.maxWidth < 600,
+              ),
+            ),
+            if (wide && showDataColumn) _buildDataColumn(bangumi),
+          ],
+        );
+      },
     );
   }
 
@@ -91,12 +110,13 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
 
   Widget _buildPosterColumn(VideoModel video) {
     final colorScheme = Theme.of(context).colorScheme;
-    final isFavorite =
-        ref.watch(favoritesProvider).any((v) => v.id == video.id);
+    final isFavorite = ref
+        .watch(favoritesProvider)
+        .any((v) => v.id == video.id);
     final genres = _splitGenres(video.genre);
 
     return SizedBox(
-      width: 280,
+      width: 220,
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(24, 4, 16, 24),
         child: Column(
@@ -107,27 +127,23 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
               aspectRatio: 2 / 3,
               child: Container(
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(6),
                   color: colorScheme.surfaceContainerHigh,
-                  boxShadow: [
-                    BoxShadow(
-                      color: colorScheme.shadow.withValues(alpha: 0.15),
-                      blurRadius: 24,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
                 ),
                 clipBehavior: Clip.antiAlias,
-                child: video.cover != null && video.cover!.isNotEmpty
-                    ? CachedNetworkImage(
-                        imageUrl: video.cover!.startsWith('http')
-                            ? video.cover!
-                            : 'https://yhdm.me${video.cover}',
-                        fit: BoxFit.cover,
-                        errorWidget: (context, url, error) =>
-                            _coverPlaceholder(colorScheme),
-                      )
-                    : _coverPlaceholder(colorScheme),
+                child:
+                    video.cover != null && video.cover!.isNotEmpty
+                        ? CachedNetworkImage(
+                          imageUrl:
+                              video.cover!.startsWith('http')
+                                  ? video.cover!
+                                  : 'https://yhdm.me${video.cover}',
+                          fit: BoxFit.cover,
+                          errorWidget:
+                              (context, url, error) =>
+                                  _coverPlaceholder(colorScheme),
+                        )
+                        : _coverPlaceholder(colorScheme),
               ),
             ),
             const SizedBox(height: 20),
@@ -138,9 +154,10 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
               child: FilledButton.icon(
                 icon: const Icon(Icons.play_arrow_rounded),
                 label: const Text('立即播放'),
-                onPressed: video.episodes != null && video.episodes!.isNotEmpty
-                    ? () => _playEpisode(video, 0)
-                    : null,
+                onPressed:
+                    video.episodes != null && video.episodes!.isNotEmpty
+                        ? () => _playEpisode(video, 0)
+                        : null,
               ),
             ),
             const SizedBox(height: 10),
@@ -164,23 +181,28 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
               Wrap(
                 spacing: 6,
                 runSpacing: 6,
-                children: genres
-                    .map((g) => Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: colorScheme.surfaceContainerHigh,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            g,
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: colorScheme.onSurfaceVariant,
+                children:
+                    genres
+                        .map(
+                          (g) => Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 5,
+                            ),
+                            decoration: BoxDecoration(
+                              color: colorScheme.surfaceContainerHigh,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              g,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
                             ),
                           ),
-                        ))
-                    .toList(),
+                        )
+                        .toList(),
               ),
             ],
           ],
@@ -193,36 +215,45 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
     return Container(
       color: colorScheme.surfaceContainerHighest,
       child: Center(
-        child: Icon(Icons.movie_outlined,
-            size: 64, color: colorScheme.onSurfaceVariant),
+        child: Icon(
+          Icons.movie_outlined,
+          size: 28,
+          color: colorScheme.onSurfaceVariant,
+        ),
       ),
     );
   }
 
   // ---------- 信息列 ----------
 
-  Widget _buildInfoColumn(VideoModel video, BangumiInfo? bangumi) {
+  Widget _buildInfoColumn(
+    VideoModel video,
+    BangumiInfo? bangumi, {
+    bool showInlineData = false,
+    bool showPoster = false,
+  }) {
     final colorScheme = Theme.of(context).colorScheme;
     // 历史"当前集"：有记录则描边标记
     final history = ref.watch(historyProvider);
-    final watchedIndex = history
-        .where((h) => h.videoId == video.id)
-        .map((h) => h.episodeIndex)
-        .firstOrNull;
+    final watchedIndex =
+        history
+            .where((h) => h.videoId == video.id)
+            .map((h) => h.episodeIndex)
+            .firstOrNull;
     final episodes = video.episodes ?? const <EpisodeModel>[];
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(8, 4, 24, 24),
+      padding: const EdgeInsets.fromLTRB(20, 4, 24, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (showPoster) _buildPosterColumn(video),
           // 标题 + meta
           Text(
             video.title,
-            style: Theme.of(context)
-                .textTheme
-                .headlineSmall
-                ?.copyWith(fontWeight: FontWeight.bold),
+            style: Theme.of(
+              context,
+            ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
           Row(
@@ -233,7 +264,10 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                   style: TextStyle(color: colorScheme.onSurfaceVariant),
                 ),
               if (video.year != null && video.genre != null)
-                Text(' · ', style: TextStyle(color: colorScheme.onSurfaceVariant)),
+                Text(
+                  ' · ',
+                  style: TextStyle(color: colorScheme.onSurfaceVariant),
+                ),
               if (video.genre != null)
                 Expanded(
                   child: Text(
@@ -258,16 +292,15 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
             ),
           const SizedBox(height: 24),
 
-          // 选集缩略图卡
+          // 选集
           if (episodes.isNotEmpty) ...[
             Row(
               children: [
                 Text(
                   '选集 (${episodes.length})',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.bold),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 if (watchedIndex != null &&
                     watchedIndex >= 0 &&
@@ -277,8 +310,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                   const SizedBox(width: 4),
                   Text(
                     '看到第 ${watchedIndex + 1} 集',
-                    style: TextStyle(
-                        fontSize: 12, color: colorScheme.primary),
+                    style: TextStyle(fontSize: 12, color: colorScheme.primary),
                   ),
                 ],
               ],
@@ -290,7 +322,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
               children: [
                 for (var i = 0; i < episodes.length; i++)
                   _EpisodeThumbCard(
-                    coverUrl: video.cover,
+                    title: episodes[i].title,
                     index: i,
                     isCurrent: i == watchedIndex,
                     onTap: () => _playEpisode(video, i),
@@ -299,15 +331,37 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
             ),
           ],
 
+          if (showInlineData && bangumi != null) ...[
+            const SizedBox(height: 24),
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: Text(
+                bangumi.score == null
+                    ? '制作资料'
+                    : '评分 ${bangumi.score!.toStringAsFixed(1)} · 制作资料',
+              ),
+              subtitle:
+                  bangumi.scoreCount == null
+                      ? null
+                      : Text('${bangumi.scoreCount} 人评分'),
+              children: [
+                for (final entry in bangumi.staff)
+                  ListTile(
+                    dense: true,
+                    title: Text(entry.name),
+                    subtitle: Text(entry.role),
+                  ),
+              ],
+            ),
+          ],
           // 角色行（Bangumi 有数据时）
           if (bangumi != null && bangumi.characters.isNotEmpty) ...[
             const SizedBox(height: 28),
             Text(
               '角色',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.bold),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
             SizedBox(
@@ -316,8 +370,9 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                 scrollDirection: Axis.horizontal,
                 itemCount: bangumi.characters.length,
                 separatorBuilder: (_, __) => const SizedBox(width: 10),
-                itemBuilder: (context, index) =>
-                    _CharacterCard(character: bangumi.characters[index]),
+                itemBuilder:
+                    (context, index) =>
+                        _CharacterCard(character: bangumi.characters[index]),
               ),
             ),
           ],
@@ -348,13 +403,10 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                     children: [
                       Text(
                         '评分',
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleSmall
-                            ?.copyWith(
-                              fontWeight: FontWeight.w600,
-                              color: colorScheme.onSurfaceVariant,
-                            ),
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       Row(
@@ -362,13 +414,12 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                         children: [
                           Text(
                             bangumi.score!.toStringAsFixed(1),
-                            style: Theme.of(context)
-                                .textTheme
-                                .displaySmall
-                                ?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                  color: colorScheme.primary,
-                                ),
+                            style: Theme.of(
+                              context,
+                            ).textTheme.displaySmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              color: colorScheme.primary,
+                            ),
                           ),
                           const SizedBox(width: 4),
                           Padding(
@@ -409,13 +460,10 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                     children: [
                       Text(
                         '制作人员',
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleSmall
-                            ?.copyWith(
-                              fontWeight: FontWeight.w600,
-                              color: colorScheme.onSurfaceVariant,
-                            ),
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       for (final entry in bangumi.staff)
@@ -479,9 +527,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const Center(
-        child: CircularProgressIndicator(),
-      ),
+      builder: (context) => const Center(child: CircularProgressIndicator()),
     );
 
     try {
@@ -494,17 +540,17 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
         _navigateToPlayer(video, index, playUrls.first);
       } else {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('暂无可用播放源')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('暂无可用播放源')));
         }
       }
     } catch (e) {
       if (mounted) Navigator.pop(context);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('获取播放地址失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('获取播放地址失败: $e')));
       }
     }
   }
@@ -512,11 +558,10 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
   void _toggleFavorite(VideoModel video) {
     ref.read(favoritesProvider.notifier).toggle(video).then((_) {
       if (!mounted) return;
-      final isFav =
-          ref.read(favoritesProvider).any((v) => v.id == video.id);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(isFav ? '已加入收藏' : '已取消收藏')),
-      );
+      final isFav = ref.read(favoritesProvider).any((v) => v.id == video.id);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(isFav ? '已加入收藏' : '已取消收藏')));
     });
   }
 
@@ -525,9 +570,10 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
       context,
       videoUrl: videoUrl,
       title: '${video.title} - ${video.episodes![index].title}',
-      episodes: video.episodes!
-          .map((e) => {'title': e.title, 'url': e.playUrl ?? e.url})
-          .toList(),
+      episodes:
+          video.episodes!
+              .map((e) => {'title': e.title, 'url': e.playUrl ?? e.url})
+              .toList(),
       currentIndex: index,
       videoId: video.id,
       videoTitle: video.title,
@@ -538,98 +584,39 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
 
 // ---------- 私有小部件 ----------
 
-/// 选集缩略图卡：番剧封面做缩略 + 集数角标，当前集主色描边
+/// 选集按钮，当前观看集描边提示。
 class _EpisodeThumbCard extends StatelessWidget {
-  final String? coverUrl;
+  final String title;
   final int index;
   final bool isCurrent;
   final VoidCallback onTap;
 
   const _EpisodeThumbCard({
-    required this.coverUrl,
+    required this.title,
     required this.index,
     required this.isCurrent,
     required this.onTap,
   });
 
   @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        width: 148,
-        height: 92,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: isCurrent ? colorScheme.primary : colorScheme.outlineVariant,
-            width: isCurrent ? 2 : 1,
-          ),
-          color: colorScheme.surfaceContainerHigh,
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            if (coverUrl != null && coverUrl!.isNotEmpty)
-              CachedNetworkImage(
-                imageUrl: coverUrl!.startsWith('http')
-                    ? coverUrl!
-                    : 'https://yhdm.me$coverUrl',
-                fit: BoxFit.cover,
-                errorWidget: (context, url, error) => Center(
-                  child: Icon(Icons.movie_outlined,
-                      color: colorScheme.onSurfaceVariant),
-                ),
+  Widget build(BuildContext context) => SizedBox(
+    width: 136,
+    child: OutlinedButton(
+      onPressed: onTap,
+      style:
+          isCurrent
+              ? OutlinedButton.styleFrom(
+                side: BorderSide(color: Theme.of(context).colorScheme.primary),
+                foregroundColor: Theme.of(context).colorScheme.primary,
               )
-            else
-              Center(
-                child: Icon(Icons.movie_outlined,
-                    color: colorScheme.onSurfaceVariant),
-              ),
-            // 集数角标
-            Positioned(
-              left: 0,
-              bottom: 0,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: isCurrent
-                      ? colorScheme.primary
-                      : Colors.black54,
-                  borderRadius: const BorderRadius.only(
-                    topRight: Radius.circular(10),
-                  ),
-                ),
-                child: Text(
-                  '第 ${index + 1} 集',
-                  style: TextStyle(
-                    color: isCurrent
-                        ? colorScheme.onPrimary
-                        : Colors.white,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ),
-            if (isCurrent)
-              Center(
-                child: Icon(
-                  Icons.play_circle_fill_rounded,
-                  color: Colors.white.withValues(alpha: 0.9),
-                  size: 30,
-                ),
-              ),
-          ],
-        ),
+              : null,
+      child: Text(
+        title.isEmpty ? '第 ${index + 1} 集' : title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
-    );
-  }
+    ),
+  );
 }
 
 /// 角色卡：头像 + 角色名 + CV
@@ -651,22 +638,24 @@ class _CharacterCard extends StatelessWidget {
             height: 84,
             decoration: BoxDecoration(
               color: colorScheme.surfaceContainerHigh,
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(6),
             ),
             clipBehavior: Clip.antiAlias,
-            child: character.imageUrl != null
-                ? CachedNetworkImage(
-                    imageUrl: character.imageUrl!,
-                    fit: BoxFit.cover,
-                    errorWidget: (context, url, error) => Icon(
+            child:
+                character.imageUrl != null
+                    ? CachedNetworkImage(
+                      imageUrl: character.imageUrl!,
+                      fit: BoxFit.cover,
+                      errorWidget:
+                          (context, url, error) => Icon(
+                            Icons.person_outline,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                    )
+                    : Icon(
                       Icons.person_outline,
                       color: colorScheme.onSurfaceVariant,
                     ),
-                  )
-                : Icon(
-                    Icons.person_outline,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
           ),
           const SizedBox(height: 6),
           Text(

@@ -17,49 +17,51 @@ class HistoryScreen extends ConsumerWidget {
         title: const Text('历史'),
         actions: [
           TextButton(
-            onPressed: history.isEmpty
-                ? null
-                : () => _confirmClear(context, ref),
+            onPressed:
+                history.isEmpty ? null : () => _confirmClear(context, ref),
             child: const Text('清除'),
           ),
         ],
       ),
-      body: history.isEmpty
-          ? _buildEmptyState(context)
-          : Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 920),
-                child: ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: history.length,
-                  itemBuilder: (context, index) =>
-                      _buildHistoryCard(context, ref, history[index]),
+      body:
+          history.isEmpty
+              ? _buildEmptyState(context)
+              : Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 920),
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: history.length,
+                    itemBuilder:
+                        (context, index) =>
+                            _buildHistoryCard(context, ref, history[index]),
+                  ),
                 ),
               ),
-            ),
     );
   }
 
   void _confirmClear(BuildContext context, WidgetRef ref) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('清除历史'),
-        content: const Text('确定要清除所有观看历史吗？'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
+      builder:
+          (context) => AlertDialog(
+            title: const Text('清除历史'),
+            content: const Text('确定要清除所有观看历史吗？'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () {
+                  ref.read(historyProvider.notifier).clear();
+                  Navigator.pop(context);
+                },
+                child: const Text('确定'),
+              ),
+            ],
           ),
-          TextButton(
-            onPressed: () {
-              ref.read(historyProvider.notifier).clear();
-              Navigator.pop(context);
-            },
-            child: const Text('确定'),
-          ),
-        ],
-      ),
     );
   }
 
@@ -76,8 +78,7 @@ class HistoryScreen extends ConsumerWidget {
       progress: item.progress > 0 ? item.progress : null,
       onTap: () => launchHistoryResume(context, item),
       onResume: () => launchHistoryResume(context, item),
-      onRemove: () =>
-          ref.read(historyProvider.notifier).remove(item.videoId),
+      onRemove: () => ref.read(historyProvider.notifier).remove(item.videoId),
     );
   }
 
@@ -89,16 +90,13 @@ class HistoryScreen extends ConsumerWidget {
         children: [
           Icon(
             Icons.history_rounded,
-            size: 80,
+            size: 28,
             color: colorScheme.onSurfaceVariant,
           ),
           const SizedBox(height: 16),
           Text(
             '暂无观看记录',
-            style: TextStyle(
-              fontSize: 18,
-              color: colorScheme.onSurfaceVariant,
-            ),
+            style: TextStyle(fontSize: 15, color: colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: 8),
           Text(
