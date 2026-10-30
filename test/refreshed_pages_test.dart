@@ -74,7 +74,8 @@ void main() {
       find.widgetWithText(SwitchListTile, '自动播放下一集'),
     );
     expect(autoPlayTile.value, isTrue);
-    // 弹幕/下载路径/检查更新仍是占位
+    // 弹幕账号/样式已接通；下载路径、检查更新仍是占位（需要滚动到底部）
+    await tester.scrollUntilVisible(find.text('检查更新'), 300);
     expect(find.text('尚未开放'), findsWidgets);
     expect(tester.takeException(), isNull);
   });

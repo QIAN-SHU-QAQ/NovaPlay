@@ -211,6 +211,30 @@ class DatabaseService {
   Future<void> setPlaybackSpeed(double value) =>
       _store?.setDouble('playback_speed', value) ?? Future.value();
 
+  // 弹幕：dandanplay 开放 API 凭据 + 显示样式
+  String getDanmakuAppId() => _store?.getString('danmaku_app_id') ?? '';
+  Future<void> setDanmakuAppId(String value) =>
+      _store?.setString('danmaku_app_id', value) ?? Future.value();
+
+  String getDanmakuAppSecret() => _store?.getString('danmaku_app_secret') ?? '';
+  Future<void> setDanmakuAppSecret(String value) =>
+      _store?.setString('danmaku_app_secret', value) ?? Future.value();
+
+  double getDanmakuOpacity() => _store?.getDouble('danmaku_opacity') ?? 1.0;
+  Future<void> setDanmakuOpacity(double value) =>
+      _store?.setDouble('danmaku_opacity', value.clamp(0.2, 1.0)) ??
+      Future.value();
+
+  double getDanmakuFontSize() => _store?.getDouble('danmaku_font_size') ?? 16.0;
+  Future<void> setDanmakuFontSize(double value) =>
+      _store?.setDouble('danmaku_font_size', value.clamp(10.0, 32.0)) ??
+      Future.value();
+
+  double getDanmakuArea() => _store?.getDouble('danmaku_area') ?? 1.0;
+  Future<void> setDanmakuArea(double value) =>
+      _store?.setDouble('danmaku_area', value.clamp(0.2, 1.0)) ??
+      Future.value();
+
   // Data Sources（用户可配置的 maccms 源）
   List<SourceConfig> getSources() {
     final raw = _store?.getString(_sourcesKey);

@@ -67,10 +67,10 @@ void main() {
     );
     expect(find.text('播放失败'), findsOneWidget);
     final danmakuButton = tester.widget<IconButton>(
-      find.widgetWithIcon(IconButton, Icons.subtitles_outlined),
+      find.widgetWithIcon(IconButton, Icons.subtitles_rounded),
     );
-    expect(danmakuButton.tooltip, '弹幕尚未开放');
-    expect(danmakuButton.onPressed, isNull);
+    expect(danmakuButton.tooltip, '关闭弹幕');
+    expect(danmakuButton.onPressed, isNotNull);
     platform.fail = false;
     await tester.tap(find.text('重试'));
     await tester.pumpAndSettle();

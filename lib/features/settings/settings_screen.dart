@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../../providers/danmaku_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../providers/theme_provider.dart';
 import 'source_management_screen.dart';
@@ -11,6 +14,7 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final mode = ref.watch(themeModeProvider);
     final playerSettings = ref.watch(playerSettingsProvider);
+    final danmaku = ref.watch(danmakuSettingsProvider);
     final colors = Theme.of(context).colorScheme;
     Widget heading(String text) => Padding(
       padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
@@ -70,7 +74,38 @@ class SettingsScreen extends ConsumerWidget {
                 ),
                 onTap: () => _showSpeedDialog(context, ref),
               ),
-              pending(Icons.subtitles_outlined, '弹幕'),
+              SwitchListTile(
+                secondary: const Icon(Icons.subtitles_outlined, size: 20),
+                title: const Text('弹幕'),
+                subtitle: const Text('播放时显示弹幕（需要弹弹play账号）'),
+                value: danmaku.enabled,
+                onChanged:
+                    ref.read(danmakuSettingsProvider.notifier).setEnabled,
+              ),
+              ListTile(
+                leading: const Icon(Icons.key_outlined, size: 20),
+                title: const Text('弹弹play 账号'),
+                subtitle: Text(
+                  danmaku.hasCredentials
+                      ? '已配置：${danmaku.appId}'
+                      : '未配置，点击填入 AppId / AppSecret（免费申请）',
+                ),
+                trailing: Text(
+                  danmaku.hasCredentials ? '修改' : '去配置',
+                  style: TextStyle(color: colors.primary),
+                ),
+                onTap: () => _showDanmakuCredentialsDialog(context, ref),
+              ),
+              ListTile(
+                leading: const Icon(Icons.tune, size: 20),
+                title: const Text('弹幕样式'),
+                subtitle: Text(
+                  '透明度 ${(danmaku.opacity * 100).round()}% · '
+                  '字号 ${danmaku.fontSize.round()} · '
+                  '显示区域 ${(danmaku.area * 100).round()}%',
+                ),
+                onTap: () => _showDanmakuStyleDialog(context, ref),
+              ),
               const Divider(),
               heading('下载与数据源'),
               pending(Icons.folder_outlined, '下载路径'),
@@ -136,6 +171,196 @@ class SettingsScreen extends ConsumerWidget {
                   ),
                 ),
             ],
+          ),
+    );
+  }
+
+  Future<void> _showDanmakuCredentialsDialog(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final current = ref.read(danmakuSettingsProvider);
+    final appIdController = TextEditingController(text: current.appId);
+    final secretController = TextEditingController(text: current.appSecret);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        final dialogColors = Theme.of(dialogContext).colorScheme;
+        return AlertDialog(
+          title: const Text('弹弹play 账号'),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('弹幕来自弹弹play 开放弹幕网络。请先在开发者中心免费申请 AppId / AppSecret：'),
+                const SizedBox(height: 6),
+                InkWell(
+                  onTap:
+                      () => launchUrl(
+                        Uri.parse('https://dev.dandanplay.com'),
+                        mode: LaunchMode.externalApplication,
+                      ),
+                  child: Text(
+                    'https://dev.dandanplay.com',
+                    style: TextStyle(color: dialogColors.primary),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: appIdController,
+                  decoration: const InputDecoration(
+                    labelText: 'AppId',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: secretController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'AppSecret',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '凭据只保存在本机；清空后保存即可停止加载弹幕。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: dialogColors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+    if (saved == true) {
+      await ref
+          .read(danmakuSettingsProvider.notifier)
+          .saveCredentials(appIdController.text, secretController.text);
+    }
+    appIdController.dispose();
+    secretController.dispose();
+  }
+
+  Future<void> _showDanmakuStyleDialog(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final current = ref.read(danmakuSettingsProvider);
+    var opacity = current.opacity;
+    var fontSize = current.fontSize;
+    var area = current.area;
+
+    await showDialog<void>(
+      context: context,
+      builder:
+          (dialogContext) => StatefulBuilder(
+            builder: (dialogContext, setDialogState) {
+              Widget slider({
+                required String label,
+                required String valueText,
+                required double value,
+                required double min,
+                required double max,
+                required int divisions,
+                required ValueChanged<double> onChanged,
+              }) {
+                final textTheme = Theme.of(dialogContext).textTheme;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(label, style: textTheme.bodyMedium),
+                        const Spacer(),
+                        Text(valueText, style: textTheme.bodySmall),
+                      ],
+                    ),
+                    Slider(
+                      value: value,
+                      min: min,
+                      max: max,
+                      divisions: divisions,
+                      onChanged: onChanged,
+                    ),
+                  ],
+                );
+              }
+
+              return AlertDialog(
+                title: const Text('弹幕样式'),
+                content: SizedBox(
+                  width: 420,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      slider(
+                        label: '透明度',
+                        valueText: '${(opacity * 100).round()}%',
+                        value: opacity,
+                        min: 0.2,
+                        max: 1.0,
+                        divisions: 8,
+                        onChanged: (v) => setDialogState(() => opacity = v),
+                      ),
+                      slider(
+                        label: '字号',
+                        valueText: fontSize.round().toString(),
+                        value: fontSize,
+                        min: 10,
+                        max: 32,
+                        divisions: 11,
+                        onChanged: (v) => setDialogState(() => fontSize = v),
+                      ),
+                      slider(
+                        label: '显示区域（屏幕高度占比）',
+                        valueText: '${(area * 100).round()}%',
+                        value: area,
+                        min: 0.2,
+                        max: 1.0,
+                        divisions: 8,
+                        onChanged: (v) => setDialogState(() => area = v),
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('取消'),
+                  ),
+                  FilledButton(
+                    onPressed: () async {
+                      final notifier = ref.read(
+                        danmakuSettingsProvider.notifier,
+                      );
+                      await notifier.setOpacity(opacity);
+                      await notifier.setFontSize(fontSize);
+                      await notifier.setArea(area);
+                      if (dialogContext.mounted) {
+                        Navigator.pop(dialogContext);
+                      }
+                    },
+                    child: const Text('保存'),
+                  ),
+                ],
+              );
+            },
           ),
     );
   }
