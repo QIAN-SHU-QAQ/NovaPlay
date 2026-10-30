@@ -1,16 +1,22 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../models/history_item.dart';
 
-/// 打开播放器：优先创建独立的播放窗口，关掉播放窗口不会退出主界面。
+/// 当前进程是否运行在 `flutter test` 里（测试环境不启动独立进程）。
+bool get _isFlutterTest =>
+    !kIsWeb &&
+    (const bool.fromEnvironment('FLUTTER_TEST') ||
+        Platform.environment['FLUTTER_TEST'] == 'true');
+
+/// 打开播放器：启动一个独立的本程序进程来显示播放窗口。
 ///
-/// 如果当前平台/窗口创建失败（例如测试环境或非 Windows），回退到主窗口内路由播放。
+/// 独立进程的好处：关闭播放窗口只结束该进程，主界面完全不受影响。
+/// 如果启动失败（例如 flutter test 或非 Windows），回退到主窗口内路由播放。
 Future<void> launchPlayer(
   BuildContext context, {
   required String videoUrl,
@@ -33,24 +39,15 @@ Future<void> launchPlayer(
     'cover': cover,
   };
 
-  // flutter test 没有原生多窗口插件，直接走窗口内路由，保持测试可预期。
-  final isTest =
-      !kIsWeb &&
-      (const bool.fromEnvironment('FLUTTER_TEST') ||
-          Platform.environment['FLUTTER_TEST'] == 'true');
-  final canCreateWindow = !kIsWeb && Platform.isWindows && !isTest;
-  if (canCreateWindow) {
+  if (!kIsWeb && Platform.isWindows && !_isFlutterTest) {
     try {
-      final controller = await WindowController.create(
-        WindowConfiguration(
-          arguments: jsonEncode({'type': 'player', ...extra}),
-          hiddenAtLaunch: true,
-        ),
-      );
-      await controller.show();
+      await Process.start(Platform.resolvedExecutable, [
+        '--player',
+        jsonEncode(extra),
+      ], mode: ProcessStartMode.detached);
       return;
     } catch (e) {
-      debugPrint('创建独立播放窗口失败，回退到窗口内播放: $e');
+      debugPrint('启动独立播放进程失败，回退到窗口内播放: $e');
     }
   }
 

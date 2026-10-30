@@ -56,7 +56,7 @@ Windows 上的动漫聚合播放器，用 Flutter 和 media_kit 编写。可以�
   flutter build windows
   ```
 
-多窗口播放依赖 `desktop_multi_window`：其 0.3.1 用到了 Flutter 3.35+ 才有的 `DartProject::set_ui_thread_policy`，项目锁定的 Flutter 3.29.3 无法编译，因此 `third_party/desktop_multi_window/` 里 vendor 了一份并移除了该调用（见 `pubspec.yaml` 注释）。升级 Flutter 后可以改回 pub 依赖。
+播放窗口是一个**独立进程**：点开视频时主进程会启动一个新的本程序进程（`--player <json>`），由 `window_manager` 控制子窗口的标题和关闭。这样关闭播放窗口只会结束子进程，主界面完全不受影响；在 Flutter 3.29 上比同进程多引擎稳定得多（同进程多引擎会让主窗口停止响应）。
 
 在 PowerShell 中运行：
 

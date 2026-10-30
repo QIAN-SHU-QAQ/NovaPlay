@@ -5,9 +5,9 @@ import '../../core/config/theme.dart';
 import '../../core/window/player_window_bridge.dart';
 import 'player_screen.dart';
 
-/// 独立播放窗口的根 Widget。
+/// 独立播放进程的根 Widget。
 ///
-/// 参数由主窗口通过 `desktop_multi_window` 传入（main() 解析后交给本类）。
+/// 主进程通过 `--player <json>` 启动新的本程序进程，main() 解析参数后交给本类。
 class PlayerWindowApp extends StatefulWidget {
   const PlayerWindowApp({super.key, required this.arguments});
 

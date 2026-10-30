@@ -1,32 +1,29 @@
-import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
+import 'package:window_manager/window_manager.dart';
 
-/// 独立播放窗口与原生 runner 之间的桥。
+/// 独立播放进程与窗口之间的桥。
 ///
-/// runner（windows/runner/flutter_window.cpp）会给每个播放窗口注册
-/// `nova_play/player_window` 通道，支持 close / setTitle。
+/// 播放窗口是一个独立进程（main() 通过 `--player <json>` 启动），
+/// 使用 window_manager 控制该进程自己的窗口：改名、关闭。
 class PlayerWindowBridge {
-  static const MethodChannel _channel = MethodChannel(
-    'nova_play/player_window',
-  );
-
-  /// 当前进程是否是播放子窗口（由 main() 根据启动参数设置）。
+  /// 当前进程是否是独立播放进程（由 main() 根据启动参数设置）。
   static bool isPlayerWindow = false;
 
   static Future<void> setTitle(String title) async {
     if (!isPlayerWindow) return;
     try {
-      await _channel.invokeMethod<void>('setTitle', title);
-    } catch (_) {
-      // 非 Windows / 测试环境没有原生通道，忽略即可。
+      await windowManager.setTitle(title);
+    } catch (e) {
+      debugPrint('设置播放窗口标题失败: $e');
     }
   }
 
   static Future<void> close() async {
     if (!isPlayerWindow) return;
     try {
-      await _channel.invokeMethod<void>('close');
-    } catch (_) {
-      // 忽略：窗口关闭失败时由用户点窗口关闭按钮兜底。
+      await windowManager.close();
+    } catch (e) {
+      debugPrint('关闭播放窗口失败: $e');
     }
   }
 }
