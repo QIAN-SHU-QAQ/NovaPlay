@@ -108,8 +108,10 @@ void main() {
   testWidgets('download page explains availability without simulated tasks', (
     tester,
   ) async {
-    await tester.pumpWidget(const MaterialApp(home: DownloadScreen()));
-    expect(find.text('下载功能还在开发'), findsOneWidget);
+    await tester.pumpWidget(
+      const ProviderScope(child: MaterialApp(home: DownloadScreen())),
+    );
+    expect(find.text('还没有下载任务'), findsOneWidget);
     expect(find.byType(LinearProgressIndicator), findsNothing);
     expect(find.text('编辑'), findsNothing);
   });

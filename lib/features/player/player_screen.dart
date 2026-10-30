@@ -20,7 +20,7 @@ final playerFactoryProvider = Provider<Player Function()>(
       () => Player(
         configuration: const PlayerConfiguration(
           bufferSize: 64 * 1024 * 1024,
-          protocolWhitelist: ['https', 'http', 'tcp', 'tls'],
+          protocolWhitelist: ['file', 'https', 'http', 'tcp', 'tls'],
         ),
       ),
 );
