@@ -3,13 +3,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 
-enum DownloadStatus {
-  pending,
-  downloading,
-  paused,
-  completed,
-  failed,
-}
+enum DownloadStatus { pending, downloading, paused, completed, failed }
 
 class DownloadTask {
   final String id;
@@ -57,12 +51,7 @@ class DownloadService {
 
   Future<void> addTask(String title, String url, {String? cover}) async {
     final id = DateTime.now().millisecondsSinceEpoch.toString();
-    final task = DownloadTask(
-      id: id,
-      title: title,
-      url: url,
-      cover: cover,
-    );
+    final task = DownloadTask(id: id, title: title, url: url, cover: cover);
 
     _tasks.add(task);
     _notifyListeners();

@@ -37,7 +37,10 @@ class YhdmScraper extends BaseScraper {
   }
 
   @override
-  Future<List<VideoModel>> getByCategory(String category, {int page = 1}) async {
+  Future<List<VideoModel>> getByCategory(
+    String category, {
+    int page = 1,
+  }) async {
     try {
       // 樱花动漫分类页面
       final url = '$baseUrl/list/$page.html';
@@ -74,11 +77,13 @@ class YhdmScraper extends BaseScraper {
       final title = document.querySelector('h1')?.text.trim() ?? '未知';
 
       // 解析封面
-      final cover = document.querySelector('.detail-info img')?.attributes['src'] ??
+      final cover =
+          document.querySelector('.detail-info img')?.attributes['src'] ??
           document.querySelector('.thumb img')?.attributes['src'];
 
       // 解析简介
-      final description = document.querySelector('.detail-info .des')?.text.trim() ??
+      final description =
+          document.querySelector('.detail-info .des')?.text.trim() ??
           document.querySelector('.info')?.text.trim();
 
       // 解析评分
@@ -118,7 +123,8 @@ class YhdmScraper extends BaseScraper {
   @override
   Future<List<String>> getPlayUrls(String episodeUrl) async {
     try {
-      final fullUrl = episodeUrl.startsWith('http') ? episodeUrl : '$baseUrl$episodeUrl';
+      final fullUrl =
+          episodeUrl.startsWith('http') ? episodeUrl : '$baseUrl$episodeUrl';
       final response = await _httpClient.get(fullUrl);
       final document = html_parser.parse(response.data);
 
@@ -160,7 +166,9 @@ class YhdmScraper extends BaseScraper {
     final videos = <VideoModel>[];
 
     // 樱花动漫的视频列表通常在 .list-sucl 或类似的容器中
-    final items = document.querySelectorAll('.list-sucl li, .video-list li, .anime-list li, .list-item');
+    final items = document.querySelectorAll(
+      '.list-sucl li, .video-list li, .anime-list li, .list-item',
+    );
 
     for (final item in items) {
       try {
@@ -185,15 +193,17 @@ class YhdmScraper extends BaseScraper {
         final info = item.querySelector('.info, .tag, .note')?.text.trim();
 
         if (title.isNotEmpty && href.isNotEmpty) {
-          videos.add(VideoModel(
-            id: href,
-            title: title,
-            cover: cover,
-            rating: rating,
-            source: name,
-            sourceUrl: href,
-            description: info,
-          ));
+          videos.add(
+            VideoModel(
+              id: href,
+              title: title,
+              cover: cover,
+              rating: rating,
+              source: name,
+              sourceUrl: href,
+              description: info,
+            ),
+          );
         }
       } catch (e) {
         continue;
@@ -208,7 +218,9 @@ class YhdmScraper extends BaseScraper {
     final episodes = <EpisodeModel>[];
 
     // 选集通常在播放列表区域
-    final items = document.querySelectorAll('.play-list a, .episode-list a, .movurl a, .playlist a');
+    final items = document.querySelectorAll(
+      '.play-list a, .episode-list a, .movurl a, .playlist a',
+    );
 
     for (int i = 0; i < items.length; i++) {
       final item = items[i];
@@ -216,12 +228,14 @@ class YhdmScraper extends BaseScraper {
       final title = item.text.trim();
 
       if (href.isNotEmpty) {
-        episodes.add(EpisodeModel(
-          id: 'ep_$i',
-          title: title.isNotEmpty ? title : '第${i + 1}集',
-          url: href,
-          index: i,
-        ));
+        episodes.add(
+          EpisodeModel(
+            id: 'ep_$i',
+            title: title.isNotEmpty ? title : '第${i + 1}集',
+            url: href,
+            index: i,
+          ),
+        );
       }
     }
 

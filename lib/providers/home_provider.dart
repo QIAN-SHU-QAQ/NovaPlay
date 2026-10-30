@@ -13,8 +13,10 @@ final categoriesProvider = FutureProvider<List<String>>((ref) async {
 final selectedCategoryProvider = StateProvider<String>((ref) => '全部');
 
 /// 分类筛选结果（无分页，默认拉第一页）
-final categoryVideosProvider =
-    FutureProvider.family<List<VideoModel>, String>((ref, category) async {
+final categoryVideosProvider = FutureProvider.family<List<VideoModel>, String>((
+  ref,
+  category,
+) async {
   final scraper = ref.read(currentScraperProvider);
   return scraper.getByCategory(category);
 });

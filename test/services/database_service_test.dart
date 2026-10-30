@@ -23,19 +23,28 @@ void main() {
     int episodeIndex = 0,
     int positionSec = 60,
     DateTime? watchedAt,
-  }) =>
-      HistoryItem(
-        videoId: videoId,
-        title: '视频-$videoId',
-        episodes: [
-          EpisodeModel(id: 'ep_1', title: '第 1 集', url: 'https://a/1.m3u8', index: 0),
-          EpisodeModel(id: 'ep_2', title: '第 2 集', url: 'https://a/2.m3u8', index: 1),
-        ],
-        episodeIndex: episodeIndex,
-        position: Duration(seconds: positionSec),
-        duration: const Duration(seconds: 1440),
-        watchedAt: watchedAt ?? DateTime.now(),
-      );
+  }) => HistoryItem(
+    videoId: videoId,
+    title: '视频-$videoId',
+    episodes: [
+      EpisodeModel(
+        id: 'ep_1',
+        title: '第 1 集',
+        url: 'https://a/1.m3u8',
+        index: 0,
+      ),
+      EpisodeModel(
+        id: 'ep_2',
+        title: '第 2 集',
+        url: 'https://a/2.m3u8',
+        index: 1,
+      ),
+    ],
+    episodeIndex: episodeIndex,
+    position: Duration(seconds: positionSec),
+    duration: const Duration(seconds: 1440),
+    watchedAt: watchedAt ?? DateTime.now(),
+  );
 
   group('收藏', () {
     test('添加收藏并置顶、可查询', () async {
@@ -76,7 +85,9 @@ void main() {
       final db = DatabaseService();
       final base = DateTime(2026, 9, 29, 12);
       await db.saveHistory(history('v1', watchedAt: base));
-      await db.saveHistory(history('v2', watchedAt: base.add(const Duration(hours: 1))));
+      await db.saveHistory(
+        history('v2', watchedAt: base.add(const Duration(hours: 1))),
+      );
 
       final items = db.getHistory();
       expect(items.length, 2);
@@ -166,8 +177,9 @@ void main() {
     });
 
     test('兼容旧 dark_mode 键：true 视为深色', () async {
-      await SharedPreferences.getInstance()
-          .then((p) => p.setBool('dark_mode', true));
+      await SharedPreferences.getInstance().then(
+        (p) => p.setBool('dark_mode', true),
+      );
       final db = DatabaseService();
       db.resetForTest();
       await db.init();

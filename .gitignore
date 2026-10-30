@@ -24,3 +24,6 @@ screenshots/capture.ps1
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Flutter crash logs
+flutter_*.log

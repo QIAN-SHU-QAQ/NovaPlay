@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/theme_provider.dart';
+import 'source_management_screen.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -54,7 +55,17 @@ class SettingsScreen extends ConsumerWidget {
               const Divider(),
               heading('下载与数据源'),
               pending(Icons.folder_outlined, '下载路径'),
-              pending(Icons.source_outlined, '源管理'),
+              ListTile(
+                leading: const Icon(Icons.source_outlined, size: 20),
+                title: const Text('源管理'),
+                subtitle: const Text('启停 / 切换 / 测速 / 添加自定义源'),
+                onTap:
+                    () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const SourceManagementScreen(),
+                      ),
+                    ),
+              ),
               const Divider(),
               heading('关于'),
               ListTile(

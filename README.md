@@ -21,6 +21,7 @@ Windows 上的动漫聚合播放器，用 Flutter 和 media_kit 编写。可以�
 - 播放在线视频，切换剧集、倍速、音量和窗口全屏；播放失败时可重试。
 - 保存收藏、搜索历史和观看进度，从首页或历史页继续播放。
 - 切换浅色、深色或跟随系统的主题，重启后保留选择。
+- 在设置里管理数据源：启用/停用、切换主源、测速、添加自定义 maccms 源（主源失败自动回退到其它启用源）。
 - 从 Bangumi 补充评分、制作人员和角色资料，查不到时仍可查看作品和播放。
 
 搜索可以从侧栏或发现页右上角打开。播放器使用深色控件。
@@ -33,7 +34,7 @@ Windows 上的动漫聚合播放器，用 Flutter 和 media_kit 编写。可以�
 
 首页的全部列表支持继续加载，分类与搜索目前只展示第一页。Bangumi 资料按标题搜索并取首项，可能匹配到同名作品或其他季度。
 
-下载页会说明功能尚未开放，不会生成下载任务。设置页目前可保存主题，其余未实现选项已禁用。弹幕、源管理和自动更新也还不能使用。
+下载页会说明功能尚未开放，不会生成下载任务。设置页目前可保存主题，并可在「源管理」中启停/切换/测速/添加自定义数据源；其余未实现选项已禁用。弹幕、下载和自动更新也还不能使用。
 
 收藏和观看历史保存在本机，没有账号同步。旧历史里的播放地址可能过期，此时可回到作品详情重新选集。
 
@@ -42,6 +43,17 @@ Windows 上的动漫聚合播放器，用 Flutter 和 media_kit 编写。可以�
 项目以 Windows 桌面端为开发和验证目标。准备 Git、Flutter SDK，以及带有 C++ 桌面开发组件和 Windows SDK 的 Visual Studio。
 
 `pubspec.yaml` 要求 Dart `^3.7.2`，没有单独声明 Flutter 最低版本。本地验证使用 Windows 11、Flutter 3.29.3 / Dart 3.7.2；Visual Studio 2026 的使用依赖本地 Flutter 工具补丁，环境细节见[开发报告](开发报告.md#构建环境)。
+
+两个在 Windows 上实际踩过的前提：
+
+- **开启 Windows 开发者模式**（设置 → 系统 → 开发者选项）。插件构建要创建符号链接，否则 `flutter pub get` 会警告、`flutter build windows` 会直接失败。
+- **项目路径不要包含中文/非 ASCII 字符**。着色器编译器（impellerc）无法写入非 ASCII 路径，构建会报 `Could not write file .../ink_sparkle.frag`。如果仓库在中文目录，可用目录联接从 ASCII 路径构建：
+
+  ```powershell
+  mklink /J E:\dev\NovaPlay "E:\项目\NovaPlay"
+  cd E:\dev\NovaPlay
+  flutter build windows
+  ```
 
 在 PowerShell 中运行：
 
@@ -67,6 +79,8 @@ flutter analyze
 flutter test
 flutter build windows --release
 ```
+
+仓库已配置 GitHub Actions（`.github/workflows/ci.yml`）：每次 push / PR 会检查格式（`dart format --set-exit-if-changed`）、`flutter analyze` 与 `flutter test`。
 
 测试使用离线替身，不需要请求在线片库。实际播放与第三方接口的可用性需要另行实测。
 

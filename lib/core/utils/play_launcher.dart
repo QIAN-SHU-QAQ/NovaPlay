@@ -15,16 +15,19 @@ void launchPlayer(
   String? videoTitle,
   String? cover,
 }) {
-  context.push('/player', extra: {
-    'videoUrl': videoUrl,
-    'title': title,
-    'episodes': episodes,
-    'currentIndex': currentIndex,
-    'startAt': startAt,
-    'videoId': videoId,
-    'videoTitle': videoTitle,
-    'cover': cover,
-  });
+  context.push(
+    '/player',
+    extra: {
+      'videoUrl': videoUrl,
+      'title': title,
+      'episodes': episodes,
+      'currentIndex': currentIndex,
+      'startAt': startAt,
+      'videoId': videoId,
+      'videoTitle': videoTitle,
+      'cover': cover,
+    },
+  );
 }
 
 /// 从历史条目续播：优先用剧集快照直达播放器，快照为空则回退详情页。
@@ -39,9 +42,10 @@ void launchHistoryResume(BuildContext context, HistoryItem item) {
     context,
     videoUrl: episode.playUrl ?? episode.url,
     title: '${item.title} - ${episode.title}',
-    episodes: item.episodes
-        .map((e) => {'title': e.title, 'url': e.playUrl ?? e.url})
-        .toList(),
+    episodes:
+        item.episodes
+            .map((e) => {'title': e.title, 'url': e.playUrl ?? e.url})
+            .toList(),
     currentIndex: index,
     startAt: item.position.inSeconds,
     videoId: item.videoId,

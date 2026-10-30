@@ -25,13 +25,14 @@ class VideoListState {
     bool? hasMore,
     int? currentPage,
     String? error,
+    bool clearError = false,
   }) {
     return VideoListState(
       videos: videos ?? this.videos,
       isLoading: isLoading ?? this.isLoading,
       hasMore: hasMore ?? this.hasMore,
       currentPage: currentPage ?? this.currentPage,
-      error: error,
+      error: clearError ? null : (error ?? this.error),
     );
   }
 }
@@ -47,7 +48,7 @@ class VideoListNotifier extends StateNotifier<VideoListState> {
   Future<void> loadVideos() async {
     if (state.isLoading) return;
 
-    state = state.copyWith(isLoading: true, error: null);
+    state = state.copyWith(isLoading: true, clearError: true);
 
     try {
       final videos = await _scraper.getHome(page: 1);
@@ -58,10 +59,7 @@ class VideoListNotifier extends StateNotifier<VideoListState> {
         currentPage: 1,
       );
     } catch (e) {
-      state = state.copyWith(
-        isLoading: false,
-        error: e.toString(),
-      );
+      state = state.copyWith(isLoading: false, error: e.toString());
     }
   }
 
@@ -80,10 +78,7 @@ class VideoListNotifier extends StateNotifier<VideoListState> {
         currentPage: nextPage,
       );
     } catch (e) {
-      state = state.copyWith(
-        isLoading: false,
-        error: e.toString(),
-      );
+      state = state.copyWith(isLoading: false, error: e.toString());
     }
   }
 
@@ -98,28 +93,32 @@ class VideoListNotifier extends StateNotifier<VideoListState> {
         currentPage: 1,
       );
     } catch (e) {
-      state = VideoListState(
-        isLoading: false,
-        error: e.toString(),
-      );
+      state = VideoListState(isLoading: false, error: e.toString());
     }
   }
 }
 
 /// 首页视频列表 Provider
-final videoListProvider = StateNotifierProvider<VideoListNotifier, VideoListState>((ref) {
-  final scraper = ref.watch(currentScraperProvider);
-  return VideoListNotifier(scraper);
-});
+final videoListProvider =
+    StateNotifierProvider<VideoListNotifier, VideoListState>((ref) {
+      final scraper = ref.watch(currentScraperProvider);
+      return VideoListNotifier(scraper);
+    });
 
 /// 视频详情 Provider
-final videoDetailProvider = FutureProvider.family<VideoModel, String>((ref, url) async {
+final videoDetailProvider = FutureProvider.family<VideoModel, String>((
+  ref,
+  url,
+) async {
   final scraper = ref.watch(currentScraperProvider);
   return scraper.getDetail(url);
 });
 
 /// 视频播放地址 Provider
-final playUrlsProvider = FutureProvider.family<List<String>, String>((ref, episodeUrl) async {
+final playUrlsProvider = FutureProvider.family<List<String>, String>((
+  ref,
+  episodeUrl,
+) async {
   final scraper = ref.watch(currentScraperProvider);
   return scraper.getPlayUrls(episodeUrl);
 });

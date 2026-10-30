@@ -9,9 +9,7 @@ void main() {
   testWidgets('tap settings in rail', (WidgetTester tester) async {
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [
-          currentScraperProvider.overrideWithValue(FakeScraper()),
-        ],
+        overrides: [currentScraperProvider.overrideWithValue(FakeScraper())],
         child: const NovaPlayApp(),
       ),
     );

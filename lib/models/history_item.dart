@@ -24,9 +24,10 @@ class HistoryItem {
   });
 
   /// 观看进度 0.0 ~ 1.0（时长未知时返回 0）
-  double get progress => duration.inMilliseconds > 0
-      ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0)
-      : 0.0;
+  double get progress =>
+      duration.inMilliseconds > 0
+          ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0)
+          : 0.0;
 
   String? get episodeTitle =>
       episodeIndex >= 0 && episodeIndex < episodes.length
@@ -38,7 +39,8 @@ class HistoryItem {
       videoId: json['videoId'] as String,
       title: json['title'] as String,
       cover: json['cover'] as String?,
-      episodes: (json['episodes'] as List?)
+      episodes:
+          (json['episodes'] as List?)
               ?.map((e) => EpisodeModel.fromJson(e as Map<String, dynamic>))
               .toList() ??
           const [],
@@ -47,7 +49,7 @@ class HistoryItem {
       duration: Duration(milliseconds: json['durationMs'] as int? ?? 0),
       watchedAt:
           DateTime.tryParse(json['watchedAt'] as String? ?? '') ??
-              DateTime.now(),
+          DateTime.now(),
     );
   }
 

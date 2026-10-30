@@ -7,8 +7,10 @@ import '../models/bangumi_info.dart';
 /// bgm.tv 要求非默认 UA；任何网络/解析失败一律返回 null（静默降级）。
 class BangumiApi {
   BangumiApi({Dio? dio})
-      : _dio = dio ??
-            Dio(BaseOptions(
+    : _dio =
+          dio ??
+          Dio(
+            BaseOptions(
               baseUrl: 'https://api.bgm.tv',
               connectTimeout: const Duration(seconds: 8),
               receiveTimeout: const Duration(seconds: 12),
@@ -17,14 +19,27 @@ class BangumiApi {
                     'NovaPlay/1.0 (Windows desktop; https://github.com/novaplay)',
                 'Accept': 'application/json',
               },
-            ));
+            ),
+          );
 
   final Dio _dio;
 
   /// 参与制作人员卡的 infobox 键白名单（其余是放送日期等元数据，不入卡）
   static const _staffKeys = {
-    '原作', '导演', '系列构成', '脚本', '人物原案', '人物设定', '音乐', '音响监督',
-    '美术监督', '色彩设计', '摄影监督', '动画制作', '制作公司', '出品',
+    '原作',
+    '导演',
+    '系列构成',
+    '脚本',
+    '人物原案',
+    '人物设定',
+    '音乐',
+    '音响监督',
+    '美术监督',
+    '色彩设计',
+    '摄影监督',
+    '动画制作',
+    '制作公司',
+    '出品',
   };
 
   Future<BangumiInfo?> fetchInfo(String title) async {
@@ -36,7 +51,9 @@ class BangumiApi {
         '/v0/search/subjects',
         data: {
           'keyword': keyword,
-          'filter': {'type': [2]}, // 2 = 动画
+          'filter': {
+            'type': [2],
+          }, // 2 = 动画
         },
       );
       final list = search.data['data'] as List?;
@@ -56,8 +73,7 @@ class BangumiApi {
         _dio.get('/v0/subjects/$subjectId/characters'),
       ]);
       final subject = results[0].data as Map<String, dynamic>;
-      final charactersRaw =
-          (results[1].data as List?) ?? const [];
+      final charactersRaw = (results[1].data as List?) ?? const [];
 
       // 评分
       double? score;
@@ -105,12 +121,14 @@ class BangumiApi {
             cv ??= actor['name'].toString();
           }
         }
-        characters.add(BangumiCharacter(
-          name: name,
-          imageUrl: images?['medium']?.toString() ??
-              images?['large']?.toString(),
-          cv: cv,
-        ));
+        characters.add(
+          BangumiCharacter(
+            name: name,
+            imageUrl:
+                images?['medium']?.toString() ?? images?['large']?.toString(),
+            cv: cv,
+          ),
+        );
       }
 
       return BangumiInfo(

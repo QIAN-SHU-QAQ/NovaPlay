@@ -39,7 +39,8 @@ class _DanmakuLayerState extends State<DanmakuLayer>
 
   void _checkNewDanmakus() {
     for (final danmaku in widget.danmakus) {
-      final isInTime = danmaku.time >= widget.position &&
+      final isInTime =
+          danmaku.time >= widget.position &&
           danmaku.time < widget.position + const Duration(seconds: 1);
 
       if (isInTime && !_controllers.containsKey(danmaku.id)) {
@@ -59,11 +60,9 @@ class _DanmakuLayerState extends State<DanmakuLayer>
     final y = _getRandomY(danmaku.type);
 
     setState(() {
-      _activeDanmakus.add(_DanmakuWidget(
-        danmaku: danmaku,
-        controller: controller,
-        y: y,
-      ));
+      _activeDanmakus.add(
+        _DanmakuWidget(danmaku: danmaku, controller: controller, y: y),
+      );
     });
 
     controller.addStatusListener((status) {
@@ -121,49 +120,53 @@ class _DanmakuLayerState extends State<DanmakuLayer>
       child: Opacity(
         opacity: widget.opacity,
         child: Stack(
-          children: _activeDanmakus.map((danmakuWidget) {
-            return AnimatedBuilder(
-              animation: danmakuWidget.controller,
-              builder: (context, child) {
-                final screenWidth = MediaQuery.of(context).size.width;
-                final textWidth = _estimateTextWidth(danmakuWidget.danmaku);
+          children:
+              _activeDanmakus.map((danmakuWidget) {
+                return AnimatedBuilder(
+                  animation: danmakuWidget.controller,
+                  builder: (context, child) {
+                    final screenWidth = MediaQuery.of(context).size.width;
+                    final textWidth = _estimateTextWidth(danmakuWidget.danmaku);
 
-                double x;
-                switch (danmakuWidget.danmaku.type) {
-                  case DanmakuType.scroll:
-                    x = screenWidth * (1 - danmakuWidget.controller.value) -
-                        textWidth;
-                    break;
-                  case DanmakuType.top:
-                  case DanmakuType.bottom:
-                    x = (screenWidth - textWidth) / 2;
-                    break;
-                }
+                    double x;
+                    switch (danmakuWidget.danmaku.type) {
+                      case DanmakuType.scroll:
+                        x =
+                            screenWidth * (1 - danmakuWidget.controller.value) -
+                            textWidth;
+                        break;
+                      case DanmakuType.top:
+                      case DanmakuType.bottom:
+                        x = (screenWidth - textWidth) / 2;
+                        break;
+                    }
 
-                return Positioned(
-                  left: x,
-                  top: danmakuWidget.y *
-                      MediaQuery.of(context).size.height *
-                      0.6,
-                  child: Text(
-                    danmakuWidget.danmaku.text,
-                    style: TextStyle(
-                      color: Color(danmakuWidget.danmaku.color)
-                          .withValues(alpha: 0.9),
-                      fontSize: danmakuWidget.danmaku.fontSize,
-                      fontWeight: FontWeight.w500,
-                      shadows: [
-                        Shadow(
-                          color: Colors.black.withValues(alpha: 0.5),
-                          blurRadius: 2,
+                    return Positioned(
+                      left: x,
+                      top:
+                          danmakuWidget.y *
+                          MediaQuery.of(context).size.height *
+                          0.6,
+                      child: Text(
+                        danmakuWidget.danmaku.text,
+                        style: TextStyle(
+                          color: Color(
+                            danmakuWidget.danmaku.color,
+                          ).withValues(alpha: 0.9),
+                          fontSize: danmakuWidget.danmaku.fontSize,
+                          fontWeight: FontWeight.w500,
+                          shadows: [
+                            Shadow(
+                              color: Colors.black.withValues(alpha: 0.5),
+                              blurRadius: 2,
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  ),
+                      ),
+                    );
+                  },
                 );
-              },
-            );
-          }).toList(),
+              }).toList(),
         ),
       ),
     );

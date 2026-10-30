@@ -10,9 +10,7 @@ void main() {
     // 用 Fake 数据源覆盖，避免冒烟测试依赖真实网络（dio 超时 Timer 会挂起）
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [
-          currentScraperProvider.overrideWithValue(FakeScraper()),
-        ],
+        overrides: [currentScraperProvider.overrideWithValue(FakeScraper())],
         child: const NovaPlayApp(),
       ),
     );
