@@ -30,6 +30,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   @override
   void initState() {
     super.initState();
+    _searchController.text = ref.read(searchProvider).keyword;
     _searchHistory.addAll(DatabaseService().getSearchHistory());
   }
 
@@ -218,7 +219,9 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                               : _buildResultList(context, filtered)
                       : searchState.error != null
                           ? _buildError(context, searchState.error!)
-                          : _buildSearchSuggestions(context),
+                          : searchState.keyword.isNotEmpty
+                              ? _buildNoResults(context, searchState.keyword)
+                              : _buildSearchSuggestions(context),
             ),
           ],
         ),
@@ -227,6 +230,28 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 
   // ---------- 结果视图 ----------
+
+  Widget _buildNoResults(BuildContext context, String keyword) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.search_off_rounded,
+              size: 56,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: 16),
+            const Text('未找到相关动漫'),
+            const SizedBox(height: 8),
+            Text('没有找到“$keyword”，试试其他名称或关键词。', textAlign: TextAlign.center),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildPosterGrid(BuildContext context, List<VideoModel> results) {
     return GridView.builder(
@@ -486,7 +511,9 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           ),
           const SizedBox(height: 16),
           FilledButton(
-            onPressed: () => ref.read(searchProvider.notifier).clear(),
+            onPressed: () => ref
+                .read(searchProvider.notifier)
+                .search(ref.read(searchProvider).keyword),
             child: const Text('重试'),
           ),
         ],

@@ -12,6 +12,21 @@ import '../../core/config/theme.dart';
 import '../../models/history_item.dart';
 import '../../models/video_model.dart';
 import '../../providers/history_provider.dart';
+import 'playback_session.dart';
+import 'fullscreen_session.dart';
+
+final playerFactoryProvider = Provider<Player Function()>(
+  (ref) =>
+      () => Player(
+        configuration: const PlayerConfiguration(
+          bufferSize: 64 * 1024 * 1024,
+          protocolWhitelist: ['https', 'http', 'tcp', 'tls'],
+        ),
+      ),
+);
+
+/// An injectable surface keeps media behavior testable without a native texture.
+final playerSurfaceProvider = Provider<Widget Function(Player)?>((ref) => null);
 
 /// 播放器：恒深色主题（不受全局 themeMode 影响）。
 /// 窗口态 = 顶栏 + 视频 + 底部控制栏 + 右侧面板（弹幕占位/选集）；
@@ -48,16 +63,19 @@ class PlayerScreen extends ConsumerStatefulWidget {
 }
 
 class _PlayerScreenState extends ConsumerState<PlayerScreen> {
+  late final ThemeData _playerTheme;
   late final Player _player;
-  late final VideoController _controller;
-  late int _currentIndex;
-  bool _isInitialized = false;
-  bool _seekedToStart = false;
+  VideoController? _controller;
+  late final PlaybackSession _session;
+  late final FullscreenSession _fullscreen;
+  Widget Function(Player)? _surfaceBuilder;
+  int get _currentIndex => _session.index;
+  bool get _isInitialized => _session.ready;
   Timer? _historyTimer;
   List<EpisodeModel>? _episodeSnapshot;
 
   // 全屏与控制栏显隐
-  bool _isFullscreen = false;
+  bool get _isFullscreen => _fullscreen.active;
   bool _controlsVisible = true;
   Timer? _hideControlsTimer;
 
@@ -67,17 +85,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   void initState() {
     super.initState();
-    _currentIndex = widget.currentIndex;
+    _playerTheme = AppTheme.dark;
     _historyNotifier = ref.read(historyProvider.notifier);
-    _player = Player(
-      configuration: const PlayerConfiguration(
-        // 大缓冲区：64MB
-        bufferSize: 64 * 1024 * 1024,
-        protocolWhitelist: ['https', 'http', 'tcp', 'tls'],
-      ),
+    _player = ref.read(playerFactoryProvider)();
+    _surfaceBuilder = ref.read(playerSurfaceProvider);
+    if (_surfaceBuilder == null) _controller = VideoController(_player);
+    _session = PlaybackSession(
+      player: _player,
+      initialUrl: widget.videoUrl,
+      initialTitle: widget.title,
+      videoTitle: widget.videoTitle,
+      episodes: widget.episodes,
+      index: widget.currentIndex,
+      startAt: widget.startAt,
     );
-    _controller = VideoController(_player);
-    _initPlayer(widget.videoUrl);
+    _fullscreen = FullscreenSession();
+    _session.addListener(_sessionChanged);
+    _fullscreen.addListener(_sessionChanged);
+    unawaited(_configureAndOpen());
     _historyTimer = Timer.periodic(
       const Duration(seconds: 5),
       (_) => _recordHistory(),
@@ -91,14 +116,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _hideControlsTimer?.cancel();
     _historyTimer?.cancel();
     _recordHistory();
-    _player.dispose();
+    _session.removeListener(_sessionChanged);
+    _fullscreen.removeListener(_sessionChanged);
+    _session.dispose();
+    _fullscreen.dispose();
     super.dispose();
+  }
+
+  void _sessionChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _configureMpvProperties() async {
     try {
-      final nativePlayer = _player.platform as NativePlayer?;
-      if (nativePlayer != null) {
+      final nativePlayer = _player.platform;
+      if (nativePlayer is NativePlayer) {
         // 缓存秒数：预加载 60 秒
         await nativePlayer.setProperty('cache-secs', '60');
         // 最大前向缓冲：64MB
@@ -107,58 +139,44 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         await nativePlayer.setProperty('demuxer-max-back-bytes', '33554432');
         // HTTP 连接优化
         await nativePlayer.setProperty(
-            'demuxer-lavf-o', 'http_timeout=15,http_multiple_connections=1');
+          'demuxer-lavf-o',
+          'http_timeout=15,http_multiple_connections=1',
+        );
       }
     } catch (e) {
       debugPrint('Error configuring mpv: $e');
     }
   }
 
-  Future<void> _initPlayer(String url) async {
-    setState(() {
-      _isInitialized = false;
-    });
-
-    try {
-      await _player.setVolume(100);
-      // 先配置缓冲参数再打开媒体
-      await _configureMpvProperties();
-      await _player.open(
-        Media(url),
-        play: true,
-      );
-      if (widget.startAt > 0 && !_seekedToStart) {
-        _seekedToStart = true;
-        await _player.seek(Duration(seconds: widget.startAt));
-      }
-      setState(() {
-        _isInitialized = true;
-      });
-    } catch (e) {
-      debugPrint('Error initializing video: $e');
-    }
+  Future<void> _configureAndOpen() async {
+    await _configureMpvProperties();
+    if (mounted) await _session.open();
   }
 
   /// 把 UI 传入的剧集列表转成可持久化的快照（只转换一次）
   List<EpisodeModel>? get _episodeModels {
     final eps = widget.episodes;
     if (eps == null || eps.isEmpty) return null;
-    return _episodeSnapshot ??= eps
-        .asMap()
-        .entries
-        .map((e) => EpisodeModel(
-              id: 'ep_${e.key + 1}',
-              title: e.value['title'] ?? '第 ${e.key + 1} 集',
-              url: e.value['url'] ?? '',
-              index: e.key,
-              playUrl: e.value['url'],
-            ))
-        .toList();
+    return _episodeSnapshot ??=
+        eps
+            .asMap()
+            .entries
+            .map(
+              (e) => EpisodeModel(
+                id: 'ep_${e.key + 1}',
+                title: e.value['title'] ?? '第 ${e.key + 1} 集',
+                url: e.value['url'] ?? '',
+                index: e.key,
+                playUrl: e.value['url'],
+              ),
+            )
+            .toList();
   }
 
   /// 记录当前观看进度到历史（videoId 缺失、无剧集、进度过短时跳过）
   void _recordHistory() {
     final videoId = widget.videoId;
+    if (!_session.ready || _session.loading) return;
     if (videoId == null || videoId.isEmpty) return;
     final snapshots = _episodeModels;
     if (snapshots == null || snapshots.isEmpty) return;
@@ -167,16 +185,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final state = _player.state;
     if (state.position.inSeconds < 5) return;
 
-    unawaited(_historyNotifier.record(HistoryItem(
-      videoId: videoId,
-      title: widget.videoTitle ?? widget.title,
-      cover: widget.cover,
-      episodes: snapshots,
-      episodeIndex: _currentIndex,
-      position: state.position,
-      duration: state.duration,
-      watchedAt: DateTime.now(),
-    )));
+    unawaited(
+      _historyNotifier.record(
+        HistoryItem(
+          videoId: videoId,
+          title: widget.videoTitle ?? widget.title,
+          cover: widget.cover,
+          episodes: snapshots,
+          episodeIndex: _currentIndex,
+          position: state.position,
+          duration: state.duration,
+          watchedAt: DateTime.now(),
+        ),
+      ),
+    );
   }
 
   void _playEpisode(int index) {
@@ -189,12 +211,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // 切集前先落盘当前进度
     _recordHistory();
 
-    setState(() {
-      _currentIndex = index;
-    });
-
-    final url = widget.episodes![index]['url']!;
-    _initPlayer(url);
+    unawaited(_session.switchEpisode(index));
   }
 
   // ---------- 播放控制 ----------
@@ -217,10 +234,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   void _toggleFullscreen() {
     _hideControlsTimer?.cancel();
-    setState(() {
-      _isFullscreen = !_isFullscreen;
-      _controlsVisible = true;
-    });
+    _controlsVisible = true;
+    unawaited(
+      _fullscreen.toggle().then((_) {
+        if (mounted && _isFullscreen) _revealControls();
+      }),
+    );
   }
 
   /// 全屏态：显示控制栏并 3 秒无操作后自动隐藏
@@ -288,7 +307,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Widget build(BuildContext context) {
     // 恒深色：包裹独立的 dark 主题，与全局明暗模式解耦
     return Theme(
-      data: AppTheme.dark,
+      data: _playerTheme,
       child: Scaffold(
         backgroundColor: Colors.black,
         body: SafeArea(
@@ -346,9 +365,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   Widget _buildTopBar({bool overlay = false}) {
     return Container(
-      color: overlay
-          ? Colors.black.withValues(alpha: 0.55)
-          : Colors.black,
+      color: overlay ? Colors.black.withValues(alpha: 0.55) : Colors.black,
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Row(
         children: [
@@ -358,7 +375,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           ),
           Expanded(
             child: Text(
-              widget.title,
+              _session.title,
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 15,
@@ -380,42 +397,87 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   Widget _buildVideoArea() {
-    final colorScheme = Theme.of(context).colorScheme;
+    final colorScheme = _playerTheme.colorScheme;
     return Container(
       color: Colors.black,
-      child: _isInitialized
-          ? GestureDetector(
-              // 点击视频区域：窗口态切换播放/暂停，全屏态唤起/隐藏控制栏
-              onTap: _isFullscreen
-                  ? () {
-                      if (_controlsVisible) {
-                        _hideControlsTimer?.cancel();
-                        setState(() => _controlsVisible = false);
-                      } else {
-                        _revealControls();
-                      }
-                    }
-                  : _togglePlay,
-              child: MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: Video(controller: _controller),
+      child:
+          _isInitialized
+              ? GestureDetector(
+                // 点击视频区域：窗口态切换播放/暂停，全屏态唤起/隐藏控制栏
+                onTap:
+                    _isFullscreen
+                        ? () {
+                          if (_controlsVisible) {
+                            _hideControlsTimer?.cancel();
+                            setState(() => _controlsVisible = false);
+                          } else {
+                            _revealControls();
+                          }
+                        }
+                        : _togglePlay,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _surfaceBuilder?.call(_player) ??
+                          Video(
+                            controller: _controller!,
+                            controls: NoVideoControls,
+                          ),
+                      if (_session.buffering)
+                        const Center(child: CircularProgressIndicator()),
+                    ],
+                  ),
+                ),
+              )
+              : Center(
+                child:
+                    _session.error == null
+                        ? CircularProgressIndicator(color: colorScheme.primary)
+                        : Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.error_outline,
+                              color: Colors.white70,
+                              size: 40,
+                            ),
+                            const SizedBox(height: 12),
+                            const Text(
+                              '播放失败',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Text(
+                                _session.error!,
+                                maxLines: 3,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.white70),
+                              ),
+                            ),
+                            FilledButton.icon(
+                              onPressed: () => _session.open(),
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('重试'),
+                            ),
+                          ],
+                        ),
               ),
-            )
-          : Center(
-              child: CircularProgressIndicator(color: colorScheme.primary),
-            ),
     );
   }
 
   /// 底部控制栏：进度+缓冲 / 播放 / 上下集 / 弹幕占位 / 倍速 / 音量 / 全屏
   Widget _buildControlBar({bool overlay = false}) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final colorScheme = _playerTheme.colorScheme;
     final hasEpisodes = widget.episodes != null && widget.episodes!.isNotEmpty;
 
     return Container(
-      color: overlay
-          ? Colors.black.withValues(alpha: 0.75)
-          : colorScheme.surfaceContainerLow,
+      color:
+          overlay
+              ? Colors.black.withValues(alpha: 0.75)
+              : colorScheme.surfaceContainerLow,
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -434,9 +496,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   return IconButton(
                     tooltip: playing ? '暂停 (空格)' : '播放 (空格)',
                     icon: Icon(
-                      playing
-                          ? Icons.pause_rounded
-                          : Icons.play_arrow_rounded,
+                      playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
                       color: Colors.white,
                     ),
                     onPressed: _togglePlay,
@@ -448,19 +508,25 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               if (hasEpisodes) ...[
                 IconButton(
                   tooltip: '上一集',
-                  icon: const Icon(Icons.skip_previous_rounded,
-                      color: Colors.white),
-                  onPressed: _currentIndex > 0
-                      ? () => _playEpisode(_currentIndex - 1)
-                      : null,
+                  icon: const Icon(
+                    Icons.skip_previous_rounded,
+                    color: Colors.white,
+                  ),
+                  onPressed:
+                      _currentIndex > 0
+                          ? () => _playEpisode(_currentIndex - 1)
+                          : null,
                 ),
                 IconButton(
                   tooltip: '下一集',
-                  icon:
-                      const Icon(Icons.skip_next_rounded, color: Colors.white),
-                  onPressed: _currentIndex < widget.episodes!.length - 1
-                      ? () => _playEpisode(_currentIndex + 1)
-                      : null,
+                  icon: const Icon(
+                    Icons.skip_next_rounded,
+                    color: Colors.white,
+                  ),
+                  onPressed:
+                      _currentIndex < widget.episodes!.length - 1
+                          ? () => _playEpisode(_currentIndex + 1)
+                          : null,
                 ),
               ],
 
@@ -506,7 +572,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   Widget _buildProgressBar() {
-    final colorScheme = Theme.of(context).colorScheme;
+    final colorScheme = _playerTheme.colorScheme;
 
     return SizedBox(
       height: 26,
@@ -550,36 +616,49 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   Widget _buildSpeedMenu() {
+    return StreamBuilder<double>(
+      stream: _player.stream.rate,
+      initialData: _player.state.rate,
+      builder: (context, snapshot) => _speedMenu(snapshot.data ?? 1.0),
+    );
+  }
+
+  Widget _speedMenu(double current) {
     const rates = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
-    final current = _player.state.rate;
 
     return PopupMenuButton<double>(
       tooltip: '倍速',
       initialValue: current,
       color: const Color(0xFF2B2830),
       onSelected: (rate) => _player.setRate(rate),
-      itemBuilder: (context) => [
-        for (final rate in rates)
-          PopupMenuItem<double>(
-            value: rate,
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 28,
-                  child: rate == current
-                      ? const Icon(Icons.check, size: 16, color: Colors.white)
-                      : null,
+      itemBuilder:
+          (context) => [
+            for (final rate in rates)
+              PopupMenuItem<double>(
+                value: rate,
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 28,
+                      child:
+                          rate == current
+                              ? const Icon(
+                                Icons.check,
+                                size: 16,
+                                color: Colors.white,
+                              )
+                              : null,
+                    ),
+                    Text(
+                      '${rate}x',
+                      style: TextStyle(
+                        color: rate == current ? Colors.white : Colors.white70,
+                      ),
+                    ),
+                  ],
                 ),
-                Text(
-                  '${rate}x',
-                  style: TextStyle(
-                    color: rate == current ? Colors.white : Colors.white70,
-                  ),
-                ),
-              ],
-            ),
-          ),
-      ],
+              ),
+          ],
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         child: Text(
@@ -607,62 +686,68 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             volume <= 0
                 ? Icons.volume_off_rounded
                 : volume < 50
-                    ? Icons.volume_down_rounded
-                    : Icons.volume_up_rounded,
+                ? Icons.volume_down_rounded
+                : Icons.volume_up_rounded,
             color: Colors.white,
           ),
-          itemBuilder: (context) => [
-            PopupMenuItem<void>(
-              enabled: false,
-              child: StatefulBuilder(
-                builder: (context, setMenuState) {
-                  return SizedBox(
-                    width: 180,
-                    child: Row(
-                      children: [
-                        IconButton(
-                          icon: Icon(
-                            volume <= 0
-                                ? Icons.volume_off_rounded
-                                : Icons.volume_up_rounded,
-                            color: Colors.white,
-                            size: 20,
-                          ),
-                          onPressed: () {
-                            _player.setVolume(volume <= 0 ? 100 : 0);
-                            setMenuState(() {});
-                          },
-                        ),
-                        Expanded(
-                          child: SliderTheme(
-                            data: SliderTheme.of(context)
-                                .copyWith(trackHeight: 3),
-                            child: Slider(
-                              value: volume.clamp(0.0, 100.0),
-                              max: 100,
-                              onChanged: (value) {
-                                _player.setVolume(value);
-                                setMenuState(() {});
+          itemBuilder:
+              (context) => [
+                PopupMenuItem<void>(
+                  enabled: false,
+                  child: StreamBuilder<double>(
+                    stream: _player.stream.volume,
+                    initialData: _player.state.volume,
+                    builder: (context, volumeSnapshot) {
+                      final volume =
+                          volumeSnapshot.data ?? _player.state.volume;
+                      return SizedBox(
+                        width: 180,
+                        child: Row(
+                          children: [
+                            IconButton(
+                              icon: Icon(
+                                volume <= 0
+                                    ? Icons.volume_off_rounded
+                                    : Icons.volume_up_rounded,
+                                color: Colors.white,
+                                size: 20,
+                              ),
+                              onPressed: () {
+                                _player.setVolume(volume <= 0 ? 100 : 0);
                               },
                             ),
-                          ),
+                            Expanded(
+                              child: SliderTheme(
+                                data: SliderTheme.of(
+                                  context,
+                                ).copyWith(trackHeight: 3),
+                                child: Slider(
+                                  value: volume.clamp(0.0, 100.0),
+                                  max: 100,
+                                  onChanged: (value) {
+                                    _player.setVolume(value);
+                                  },
+                                ),
+                              ),
+                            ),
+                            SizedBox(
+                              width: 34,
+                              child: Text(
+                                '${volume.round()}',
+                                textAlign: TextAlign.end,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.white70,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                        SizedBox(
-                          width: 34,
-                          child: Text(
-                            '${volume.round()}',
-                            textAlign: TextAlign.end,
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.white70),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-          ],
+                      );
+                    },
+                  ),
+                ),
+              ],
         );
       },
     );
@@ -670,7 +755,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   /// 右侧面板：弹幕来源卡占位 + 选集网格
   Widget _buildRightPanel() {
-    final colorScheme = Theme.of(context).colorScheme;
+    final colorScheme = _playerTheme.colorScheme;
     final episodes = widget.episodes ?? const [];
 
     return Container(
@@ -685,12 +770,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             child: Card(
               margin: EdgeInsets.zero,
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
                 child: Row(
                   children: [
-                    Icon(Icons.subtitles_outlined,
-                        size: 20, color: colorScheme.onSurfaceVariant),
+                    Icon(
+                      Icons.subtitles_outlined,
+                      size: 20,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(
@@ -733,89 +823,94 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             child: Text(
               episodes.isEmpty ? '选集' : '选集 (${episodes.length})',
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: colorScheme.onSurface,
-                  ),
+              style: _playerTheme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: colorScheme.onSurface,
+              ),
             ),
           ),
 
           // 选集网格
           Expanded(
-            child: episodes.isEmpty
-                ? Center(
-                    child: Text(
-                      '单集播放',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: colorScheme.onSurfaceVariant,
+            child:
+                episodes.isEmpty
+                    ? Center(
+                      child: Text(
+                        '单集播放',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
                       ),
-                    ),
-                  )
-                : GridView.builder(
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                    gridDelegate:
-                        const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 140,
-                      mainAxisSpacing: 8,
-                      crossAxisSpacing: 8,
-                      childAspectRatio: 1.55,
-                    ),
-                    itemCount: episodes.length,
-                    itemBuilder: (context, index) {
-                      final isCurrent = index == _currentIndex;
-                      return GestureDetector(
-                        onTap: () => _playEpisode(index),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: isCurrent
-                                ? colorScheme.primaryContainer
-                                : colorScheme.surfaceContainerHigh,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: isCurrent
-                                  ? colorScheme.primary
-                                  : Colors.transparent,
-                              width: 1.5,
+                    )
+                    : GridView.builder(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                      gridDelegate:
+                          const SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: 140,
+                            mainAxisSpacing: 8,
+                            crossAxisSpacing: 8,
+                            childAspectRatio: 1.55,
+                          ),
+                      itemCount: episodes.length,
+                      itemBuilder: (context, index) {
+                        final isCurrent = index == _currentIndex;
+                        return GestureDetector(
+                          onTap: () => _playEpisode(index),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color:
+                                  isCurrent
+                                      ? colorScheme.primaryContainer
+                                      : colorScheme.surfaceContainerHigh,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color:
+                                    isCurrent
+                                        ? colorScheme.primary
+                                        : Colors.transparent,
+                                width: 1.5,
+                              ),
+                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            alignment: Alignment.centerLeft,
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '第 ${index + 1} 集',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color:
+                                        isCurrent
+                                            ? colorScheme.onPrimaryContainer
+                                            : colorScheme.onSurface,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  episodes[index]['title'] ?? '',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color:
+                                        isCurrent
+                                            ? colorScheme.onPrimaryContainer
+                                                .withValues(alpha: 0.8)
+                                            : colorScheme.onSurfaceVariant,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
                             ),
                           ),
-                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                          alignment: Alignment.centerLeft,
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                '第 ${index + 1} 集',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: isCurrent
-                                      ? colorScheme.onPrimaryContainer
-                                      : colorScheme.onSurface,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                episodes[index]['title'] ?? '',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: isCurrent
-                                      ? colorScheme.onPrimaryContainer
-                                          .withValues(alpha: 0.8)
-                                      : colorScheme.onSurfaceVariant,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+                        );
+                      },
+                    ),
           ),
         ],
       ),

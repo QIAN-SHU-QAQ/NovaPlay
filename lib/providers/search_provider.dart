@@ -35,35 +35,39 @@ class SearchState {
 /// 搜索 Notifier
 class SearchNotifier extends StateNotifier<SearchState> {
   final BaseScraper _scraper;
+  int _requestId = 0;
 
   SearchNotifier(this._scraper) : super(SearchState());
 
   Future<void> search(String keyword) async {
-    if (keyword.trim().isEmpty) return;
+    final query = keyword.trim();
+    if (!mounted || query.isEmpty) return;
 
-    state = state.copyWith(isLoading: true, keyword: keyword, error: null);
+    final requestId = ++_requestId;
+    state = SearchState(isLoading: true, keyword: query);
 
     try {
-      final results = await _scraper.search(keyword);
-      state = state.copyWith(
-        results: results,
-        isLoading: false,
-      );
+      final results = await _scraper.search(query);
+      // Older requests can still complete after a new search, clear or disposal.
+      if (!mounted || requestId != _requestId) return;
+      state = state.copyWith(results: results, isLoading: false);
     } catch (e) {
-      state = state.copyWith(
-        isLoading: false,
-        error: e.toString(),
-      );
+      if (!mounted || requestId != _requestId) return;
+      state = state.copyWith(isLoading: false, error: e.toString());
     }
   }
 
   void clear() {
+    if (!mounted) return;
+    _requestId++;
     state = SearchState();
   }
 }
 
 /// 搜索 Provider
-final searchProvider = StateNotifierProvider<SearchNotifier, SearchState>((ref) {
+final searchProvider = StateNotifierProvider<SearchNotifier, SearchState>((
+  ref,
+) {
   final scraper = ref.watch(currentScraperProvider);
   return SearchNotifier(scraper);
 });
