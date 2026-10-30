@@ -9,6 +9,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
 
 import '../../core/config/theme.dart';
+import '../../core/window/player_window_bridge.dart';
 import '../../models/history_item.dart';
 import '../../models/video_model.dart';
 import '../../providers/history_provider.dart';
@@ -294,6 +295,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   void _exitScreen() {
+    // 独立播放窗口：关闭当前子窗口即可，主界面不受影响。
+    if (PlayerWindowBridge.isPlayerWindow) {
+      PlayerWindowBridge.close();
+      return;
+    }
     if (Navigator.of(context).canPop()) {
       Navigator.of(context).pop();
     } else {

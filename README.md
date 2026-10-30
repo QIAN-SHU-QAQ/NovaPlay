@@ -18,7 +18,7 @@ Windows 上的动漫聚合播放器，用 Flutter 和 media_kit 编写。可以�
 ## 现在能做什么
 
 - 浏览片库和分类，按标题搜索，查看简介与剧集列表。
-- 播放在线视频，切换剧集、倍速、音量和窗口全屏；播放失败时可重试。
+- 播放在线视频，切换剧集、倍速、音量和窗口全屏；播放失败时可重试。**视频在独立的播放窗口中打开**，关掉视频窗口不会退出主界面，可以边看边浏览。
 - 保存收藏、搜索历史和观看进度，从首页或历史页继续播放。
 - 切换浅色、深色或跟随系统的主题，重启后保留选择。
 - 在设置里管理数据源：启用/停用、切换主源、测速、添加自定义 maccms 源（主源失败自动回退到其它启用源）。
@@ -55,6 +55,8 @@ Windows 上的动漫聚合播放器，用 Flutter 和 media_kit 编写。可以�
   cd E:\dev\NovaPlay
   flutter build windows
   ```
+
+多窗口播放依赖 `desktop_multi_window`：其 0.3.1 用到了 Flutter 3.35+ 才有的 `DartProject::set_ui_thread_policy`，项目锁定的 Flutter 3.29.3 无法编译，因此 `third_party/desktop_multi_window/` 里 vendor 了一份并移除了该调用（见 `pubspec.yaml` 注释）。升级 Flutter 后可以改回 pub 依赖。
 
 在 PowerShell 中运行：
 

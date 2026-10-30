@@ -67,6 +67,11 @@ dependencies:
   uuid: ^4.5.1
   url_launcher: ^6.3.1
 
+  # 多窗口播放：0.3.1 用到了 Flutter 3.35+ 才有的 DartProject::set_ui_thread_policy，
+  # 这里 vendor 一份并移除该调用以兼容项目锁定的 Flutter 3.29.3。
+  desktop_multi_window:
+    path: third_party/desktop_multi_window
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

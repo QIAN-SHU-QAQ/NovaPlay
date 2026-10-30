@@ -1,0 +1,48 @@
+PODS:
+  - desktop_lifecycle (0.0.1):
+    - FlutterMacOS
+  - FlutterMacOS (1.0.0)
+  - fvp (0.35.0):
+    - Flutter
+    - FlutterMacOS
+    - mdk (~> 0.35.0)
+  - mdk (0.35.0)
+  - mixin_logger (0.0.1):
+    - FlutterMacOS
+  - screen_retriever_macos (0.0.1):
+    - FlutterMacOS
+
+DEPENDENCIES:
+  - desktop_lifecycle (from `Flutter/ephemeral/.symlinks/plugins/desktop_lifecycle/macos`)
+  - FlutterMacOS (from `Flutter/ephemeral`)
+  - fvp (from `Flutter/ephemeral/.symlinks/plugins/fvp/darwin`)
+  - mixin_logger (from `Flutter/ephemeral/.symlinks/plugins/mixin_logger/macos`)
+  - screen_retriever_macos (from `Flutter/ephemeral/.symlinks/plugins/screen_retriever_macos/macos`)
+
+SPEC REPOS:
+  trunk:
+    - mdk
+
+EXTERNAL SOURCES:
+  desktop_lifecycle:
+    :path: Flutter/ephemeral/.symlinks/plugins/desktop_lifecycle/macos
+  FlutterMacOS:
+    :path: Flutter/ephemeral
+  fvp:
+    :path: Flutter/ephemeral/.symlinks/plugins/fvp/darwin
+  mixin_logger:
+    :path: Flutter/ephemeral/.symlinks/plugins/mixin_logger/macos
+  screen_retriever_macos:
+    :path: Flutter/ephemeral/.symlinks/plugins/screen_retriever_macos/macos
+
+SPEC CHECKSUMS:
+  desktop_lifecycle: a600c10e12fe033c7be9078f2e929b8241f2c1e3
+  FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
+  fvp: f4fdb89279e863eb09869bde7ba7fce9e81a16ab
+  mdk: baa616b93f696c7066df0e5ebe057badfa9c462b
+  mixin_logger: 5e5bd35ba38da1ff4939ee5ec83260d7fc5258fc
+  screen_retriever_macos: 776e0fa5d42c6163d2bf772d22478df4b302b161
+
+PODFILE CHECKSUM: 0d3963a09fc94f580682bd88480486da345dc3f0
+
+COCOAPODS: 1.16.2
