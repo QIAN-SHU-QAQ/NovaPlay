@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -44,6 +46,10 @@ class DownloadScreen extends ConsumerWidget {
                           onPause: () => notifier.pause(tasks[index].id),
                           onResume: () => notifier.resume(tasks[index].id),
                           onRemove: () => notifier.remove(tasks[index].id),
+                          onShowInFolder:
+                              tasks[index].status == DownloadStatus.completed
+                                  ? () => _showInFolder(tasks[index])
+                                  : null,
                           onPlay:
                               tasks[index].status == DownloadStatus.completed
                                   ? () => launchPlayer(
@@ -59,6 +65,23 @@ class DownloadScreen extends ConsumerWidget {
                 ),
               ),
     );
+  }
+
+  Future<void> _showInFolder(DownloadTask task) async {
+    if (!Platform.isWindows) return;
+    try {
+      final file = File(task.savePath);
+      if (await file.exists()) {
+        await Process.run('explorer.exe', ['/select,', file.path]);
+        return;
+      }
+      final parent = file.parent;
+      if (await parent.exists()) {
+        await Process.run('explorer.exe', [parent.path]);
+      }
+    } catch (e) {
+      debugPrint('打开下载文件夹失败: $e');
+    }
   }
 }
 
@@ -101,6 +124,7 @@ class _DownloadTaskTile extends StatelessWidget {
     required this.onPause,
     required this.onResume,
     required this.onRemove,
+    this.onShowInFolder,
     this.onPlay,
   });
 
@@ -108,6 +132,7 @@ class _DownloadTaskTile extends StatelessWidget {
   final VoidCallback onPause;
   final VoidCallback onResume;
   final VoidCallback onRemove;
+  final VoidCallback? onShowInFolder;
   final VoidCallback? onPlay;
 
   @override
@@ -167,6 +192,12 @@ class _DownloadTaskTile extends StatelessWidget {
                     )
                   else
                     Icon(Icons.check_circle_outline, color: colors.primary),
+                  if (completed && onShowInFolder != null)
+                    IconButton(
+                      tooltip: '在文件夹中显示',
+                      icon: const Icon(Icons.folder_open_outlined),
+                      onPressed: onShowInFolder,
+                    ),
                   IconButton(
                     tooltip: '删除',
                     icon: const Icon(Icons.delete_outline),

@@ -42,9 +42,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _onScroll() {
-    if (ref.read(selectedCategoryProvider) != '全部') return;
-    if (_scrollController.position.extentAfter < 200) {
+    if (_scrollController.position.extentAfter >= 200) return;
+    final category = ref.read(selectedCategoryProvider);
+    if (category == '全部') {
       ref.read(videoListProvider.notifier).loadMore();
+    } else {
+      ref.read(categoryFeedProvider(category).notifier).loadMore();
     }
   }
 
@@ -53,10 +56,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (category == '全部') {
       await ref.read(videoListProvider.notifier).refresh();
     } else {
-      ref.invalidate(categoryVideosProvider(category));
-      await ref
-          .read(categoryVideosProvider(category).future)
-          .catchError((_) => <VideoModel>[]);
+      await ref.read(categoryFeedProvider(category).notifier).refresh();
     }
   }
 
@@ -235,18 +235,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _category(String category) {
-    return ref
-        .watch(categoryVideosProvider(category))
-        .when(
-          loading:
-              () => const SliverFillRemaining(
-                hasScrollBody: false,
-                child: Center(child: CircularProgressIndicator()),
+    final state = ref.watch(categoryFeedProvider(category));
+    final notifier = ref.read(categoryFeedProvider(category).notifier);
+    if (state.isLoading && state.videos.isEmpty) {
+      return const SliverFillRemaining(
+        hasScrollBody: false,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (state.error != null && state.videos.isEmpty) {
+      return _message(
+        '分类加载失败',
+        detail: state.error,
+        onRetry: notifier.loadMore,
+      );
+    }
+    if (state.videos.isEmpty) {
+      return _message('该分类暂无内容', onRetry: notifier.loadMore);
+    }
+    return SliverMainAxisGroup(
+      slivers: [
+        _grid(state.videos),
+        if (state.isLoading)
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          )
+        else if (state.error != null)
+          SliverToBoxAdapter(
+            child: Center(
+              child: TextButton(
+                onPressed: notifier.loadMore,
+                child: const Text('加载更多失败，重试'),
               ),
-          error: (error, _) => _message('分类加载失败', onRetry: _refresh),
-          data:
-              (videos) => videos.isEmpty ? _message('该分类暂无内容') : _grid(videos),
-        );
+            ),
+          ),
+      ],
+    );
   }
 
   Widget _grid(List<VideoModel> videos) {

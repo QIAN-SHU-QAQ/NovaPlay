@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../providers/settings_provider.dart';
 import '../../providers/theme_provider.dart';
 import 'source_management_screen.dart';
 
@@ -9,6 +10,7 @@ class SettingsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final mode = ref.watch(themeModeProvider);
+    final playerSettings = ref.watch(playerSettingsProvider);
     final colors = Theme.of(context).colorScheme;
     Widget heading(String text) => Padding(
       padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
@@ -50,7 +52,24 @@ class SettingsScreen extends ConsumerWidget {
                 ),
               const Divider(),
               heading('播放器'),
-              pending(Icons.play_circle_outline, '自动播放下一集'),
+              SwitchListTile(
+                secondary: const Icon(Icons.play_circle_outline, size: 20),
+                title: const Text('自动播放下一集'),
+                subtitle: const Text('一集播完后自动切到下一集'),
+                value: playerSettings.autoPlayNext,
+                onChanged:
+                    ref.read(playerSettingsProvider.notifier).setAutoPlayNext,
+              ),
+              ListTile(
+                leading: const Icon(Icons.speed, size: 20),
+                title: const Text('默认播放速度'),
+                subtitle: const Text('新打开的视频使用该倍速'),
+                trailing: Text(
+                  '${playerSettings.playbackSpeed}x',
+                  style: TextStyle(color: colors.primary),
+                ),
+                onTap: () => _showSpeedDialog(context, ref),
+              ),
               pending(Icons.subtitles_outlined, '弹幕'),
               const Divider(),
               heading('下载与数据源'),
@@ -84,6 +103,40 @@ class SettingsScreen extends ConsumerWidget {
           ),
         ),
       ),
+    );
+  }
+
+  void _showSpeedDialog(BuildContext context, WidgetRef ref) {
+    final current = ref.read(playerSettingsProvider).playbackSpeed;
+    showDialog<void>(
+      context: context,
+      builder:
+          (dialogContext) => SimpleDialog(
+            title: const Text('默认播放速度'),
+            children: [
+              for (final speed in playbackSpeeds)
+                SimpleDialogOption(
+                  onPressed: () {
+                    ref
+                        .read(playerSettingsProvider.notifier)
+                        .setPlaybackSpeed(speed);
+                    Navigator.pop(dialogContext);
+                  },
+                  child: Row(
+                    children: [
+                      Text('${speed}x'),
+                      const Spacer(),
+                      if (speed == current)
+                        Icon(
+                          Icons.check,
+                          size: 18,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
     );
   }
 }

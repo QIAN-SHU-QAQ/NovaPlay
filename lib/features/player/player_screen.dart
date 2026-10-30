@@ -13,6 +13,7 @@ import '../../core/window/player_window_bridge.dart';
 import '../../models/history_item.dart';
 import '../../models/video_model.dart';
 import '../../providers/history_provider.dart';
+import '../../providers/settings_provider.dart';
 import 'playback_session.dart';
 import 'fullscreen_session.dart';
 
@@ -82,12 +83,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   // dispose 中不能再用 ref，提前捕获 notifier
   late final HistoryNotifier _historyNotifier;
+  late final PlayerSettingsNotifier _settingsNotifier;
+  StreamSubscription<bool>? _completedSub;
 
   @override
   void initState() {
     super.initState();
     _playerTheme = AppTheme.dark;
     _historyNotifier = ref.read(historyProvider.notifier);
+    _settingsNotifier = ref.read(playerSettingsProvider.notifier);
     _player = ref.read(playerFactoryProvider)();
     _surfaceBuilder = ref.read(playerSurfaceProvider);
     if (_surfaceBuilder == null) _controller = VideoController(_player);
@@ -108,6 +112,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       const Duration(seconds: 5),
       (_) => _recordHistory(),
     );
+    _completedSub = _player.stream.completed.listen(_onCompleted);
     FocusManager.instance.addEarlyKeyEventHandler(_handleKeyEvent);
   }
 
@@ -116,6 +121,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     FocusManager.instance.removeEarlyKeyEventHandler(_handleKeyEvent);
     _hideControlsTimer?.cancel();
     _historyTimer?.cancel();
+    _completedSub?.cancel();
     _recordHistory();
     _session.removeListener(_sessionChanged);
     _fullscreen.removeListener(_sessionChanged);
@@ -151,7 +157,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   Future<void> _configureAndOpen() async {
     await _configureMpvProperties();
+    // 应用设置中的默认倍速（PlaybackSession 在打开时会保留当前 rate）。
+    try {
+      await _player.setRate(ref.read(playerSettingsProvider).playbackSpeed);
+    } catch (e) {
+      debugPrint('应用默认倍速失败: $e');
+    }
     if (mounted) await _session.open();
+  }
+
+  /// 一集播放结束：按设置决定是否自动切到下一集。
+  void _onCompleted(bool completed) {
+    if (!completed || !mounted) return;
+    if (!ref.read(playerSettingsProvider).autoPlayNext) return;
+    final episodes = widget.episodes;
+    if (episodes == null) return;
+    final next = _currentIndex + 1;
+    if (next >= episodes.length) return;
+    _playEpisode(next);
   }
 
   /// 把 UI 传入的剧集列表转成可持久化的快照（只转换一次）
@@ -211,6 +234,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     // 切集前先落盘当前进度
     _recordHistory();
+
+    // 独立播放窗口：标题跟随当前集更新。
+    if (PlayerWindowBridge.isPlayerWindow) {
+      final episodeTitle =
+          widget.episodes![index]['title'] ?? '第 ${index + 1} 集';
+      PlayerWindowBridge.setTitle(
+        '${widget.videoTitle ?? widget.title} - $episodeTitle',
+      );
+    }
 
     unawaited(_session.switchEpisode(index));
   }
@@ -629,7 +661,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       tooltip: '倍速',
       initialValue: current,
       color: _playerTheme.colorScheme.surfaceContainerHigh,
-      onSelected: (rate) => _player.setRate(rate),
+      onSelected: (rate) {
+        _player.setRate(rate);
+        _settingsNotifier.setPlaybackSpeed(rate);
+      },
       itemBuilder:
           (context) => [
             for (final rate in rates)

@@ -232,27 +232,41 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
             Expanded(
               child:
-                  searchState.isLoading
+                  searchState.isLoading && searchState.results.isEmpty
                       ? const Center(child: CircularProgressIndicator())
                       : searchState.results.isNotEmpty
-                      ? (filtered.isEmpty && _genreFilter != null)
-                          ? Center(
-                            child: Text(
-                              '该筛选下暂无结果',
-                              style: TextStyle(
-                                color: colorScheme.onSurfaceVariant,
-                              ),
-                            ),
-                          )
-                          : _showAsGrid
-                          ? _buildPosterGrid(context, filtered)
-                          : _buildResultList(context, filtered)
+                      ? NotificationListener<ScrollNotification>(
+                        onNotification: (notification) {
+                          if (notification.metrics.extentAfter < 400 &&
+                              !searchState.isLoading &&
+                              searchState.hasMore &&
+                              searchState.keyword.isNotEmpty) {
+                            ref.read(searchProvider.notifier).loadMore();
+                          }
+                          return false;
+                        },
+                        child:
+                            (filtered.isEmpty && _genreFilter != null)
+                                ? Center(
+                                  child: Text(
+                                    '该筛选下暂无结果',
+                                    style: TextStyle(
+                                      color: colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                )
+                                : _showAsGrid
+                                ? _buildPosterGrid(context, filtered)
+                                : _buildResultList(context, filtered),
+                      )
                       : searchState.error != null
                       ? _buildError(context, searchState.error!)
                       : searchState.keyword.isNotEmpty
                       ? _buildNoResults(context, searchState.keyword)
                       : _buildSearchSuggestions(context),
             ),
+            if (searchState.isLoading && searchState.results.isNotEmpty)
+              const LinearProgressIndicator(minHeight: 2),
           ],
         ),
       ),

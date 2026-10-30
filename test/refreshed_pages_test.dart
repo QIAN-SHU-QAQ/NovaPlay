@@ -69,11 +69,12 @@ void main() {
       await tester.pump();
       expect(container.read(themeModeProvider), option.$2);
     }
-    final tile = tester.widget<ListTile>(
-      find.ancestor(of: find.text('自动播放下一集'), matching: find.byType(ListTile)),
+    // 自动连播已接通：是 SwitchListTile，默认开启
+    final autoPlayTile = tester.widget<SwitchListTile>(
+      find.widgetWithText(SwitchListTile, '自动播放下一集'),
     );
-    expect(tile.enabled, isFalse);
-    expect(tile.onTap, isNull);
+    expect(autoPlayTile.value, isTrue);
+    // 弹幕/下载路径/检查更新仍是占位
     expect(find.text('尚未开放'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
