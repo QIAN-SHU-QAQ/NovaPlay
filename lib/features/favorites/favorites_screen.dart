@@ -22,79 +22,84 @@ class FavoritesScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('收藏'),
         actions: [
-          TextButton(
-            onPressed: () {},
-            child: Text(
-              '${favorites.length} 部',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-        ],
-      ),
-      body: favorites.isEmpty
-          ? _buildEmptyState(context)
-          : Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 920),
-                child: ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: favorites.length,
-                  itemBuilder: (context, index) {
-                    final video = favorites[index];
-                    final history = historyMap[video.id];
-                    return WideMediaCard(
-                      title: video.title,
-                      coverUrl: video.cover,
-                      subtitle: video.genre,
-                      meta: video.episodes == null
-                          ? null
-                          : '共 ${video.episodes!.length} 集',
-                      progress: history?.progress,
-                      onTap: () => context
-                          .push('/detail/${Uri.encodeComponent(video.id)}'),
-                      onResume: () {
-                        if (history != null) {
-                          launchHistoryResume(context, history);
-                        } else {
-                          context.push(
-                              '/detail/${Uri.encodeComponent(video.id)}');
-                        }
-                      },
-                      onLongPress: () => _confirmRemove(context, ref, video),
-                    );
-                  },
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Center(
+              child: Text(
+                '${favorites.length} 部',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
             ),
-    );
-  }
-
-  void _confirmRemove(
-    BuildContext context,
-    WidgetRef ref,
-    VideoModel video,
-  ) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('移除收藏'),
-        content: Text('确定要移除「${video.title}」吗？'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              ref.read(favoritesProvider.notifier).toggle(video);
-              Navigator.pop(context);
-            },
-            child: const Text('移除'),
           ),
         ],
       ),
+      body:
+          favorites.isEmpty
+              ? _buildEmptyState(context)
+              : Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 920),
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: favorites.length,
+                    itemBuilder: (context, index) {
+                      final video = favorites[index];
+                      final history = historyMap[video.id];
+                      return WideMediaCard(
+                        title: video.title,
+                        coverUrl: video.cover,
+                        subtitle: video.genre,
+                        meta:
+                            video.episodes == null
+                                ? null
+                                : '共 ${video.episodes!.length} 集',
+                        progress: history?.progress,
+                        onTap:
+                            () => context.push(
+                              '/detail/${Uri.encodeComponent(video.id)}',
+                            ),
+                        onResume: () {
+                          if (history != null) {
+                            launchHistoryResume(context, history);
+                          } else {
+                            context.push(
+                              '/detail/${Uri.encodeComponent(video.id)}',
+                            );
+                          }
+                        },
+                        onLongPress: () => _confirmRemove(context, ref, video),
+                        onRemove: () => _confirmRemove(context, ref, video),
+                      );
+                    },
+                  ),
+                ),
+              ),
+    );
+  }
+
+  void _confirmRemove(BuildContext context, WidgetRef ref, VideoModel video) {
+    showDialog(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: const Text('移除收藏'),
+            content: Text('确定要移除「${video.title}」吗？'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () {
+                  ref.read(favoritesProvider.notifier).toggle(video);
+                  Navigator.pop(context);
+                },
+                child: const Text('移除'),
+              ),
+            ],
+          ),
     );
   }
 
@@ -106,16 +111,13 @@ class FavoritesScreen extends ConsumerWidget {
         children: [
           Icon(
             Icons.favorite_border_rounded,
-            size: 80,
+            size: 28,
             color: colorScheme.onSurfaceVariant,
           ),
           const SizedBox(height: 16),
           Text(
             '暂无收藏',
-            style: TextStyle(
-              fontSize: 18,
-              color: colorScheme.onSurfaceVariant,
-            ),
+            style: TextStyle(fontSize: 15, color: colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: 8),
           Text(

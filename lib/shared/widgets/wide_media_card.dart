@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
-/// 追番式宽横卡：横版封面 + 标题 + 副标题/集数 + 进度条 + 继续观看按钮。
+/// 收藏和历史共用的媒体列表行。
 /// 收藏页、观看历史页、首页"继续观看"区共用。
 class WideMediaCard extends StatelessWidget {
   final String title;
@@ -38,23 +38,25 @@ class WideMediaCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: colorScheme.outlineVariant)),
+      ),
       child: InkWell(
         onTap: onTap,
         onLongPress: onLongPress,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(6),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Row(
             children: [
-              // 横版封面（16:9 裁切）+ 底部进度条
+              // 保留海报比例，观看进度显示在信息列。
               Container(
-                width: 160,
-                height: 96,
+                width: 56,
+                height: 84,
                 decoration: BoxDecoration(
                   color: colorScheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(6),
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Stack(
@@ -62,40 +64,31 @@ class WideMediaCard extends StatelessWidget {
                   children: [
                     if (coverUrl != null && coverUrl!.isNotEmpty)
                       CachedNetworkImage(
-                        imageUrl: coverUrl!,
+                        imageUrl:
+                            coverUrl!.startsWith('http')
+                                ? coverUrl!
+                                : 'https://yhdm.me$coverUrl',
                         fit: BoxFit.cover,
-                        placeholder: (context, url) => Center(
-                          child: Icon(
-                            Icons.movie_outlined,
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                        errorWidget: (context, url, error) => Center(
-                          child: Icon(
-                            Icons.movie_outlined,
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
+                        placeholder:
+                            (context, url) => Center(
+                              child: Icon(
+                                Icons.movie_outlined,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                        errorWidget:
+                            (context, url, error) => Center(
+                              child: Icon(
+                                Icons.movie_outlined,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ),
                       )
                     else
                       Center(
                         child: Icon(
                           Icons.movie_outlined,
                           color: colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    if (progress != null && progress! > 0)
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        child: LinearProgressIndicator(
-                          value: progress!.clamp(0.0, 1.0),
-                          backgroundColor: Colors.black38,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                            colorScheme.primary,
-                          ),
-                          minHeight: 4,
                         ),
                       ),
                   ],
@@ -111,8 +104,8 @@ class WideMediaCard extends StatelessWidget {
                     Text(
                       title,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
+                        fontWeight: FontWeight.w600,
+                      ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -134,8 +127,9 @@ class WideMediaCard extends StatelessWidget {
                         meta!,
                         style: TextStyle(
                           fontSize: 12,
-                          color: colorScheme.onSurfaceVariant
-                              .withValues(alpha: 0.7),
+                          color: colorScheme.onSurfaceVariant.withValues(
+                            alpha: 0.7,
+                          ),
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -172,7 +166,7 @@ class WideMediaCard extends StatelessWidget {
 
               // 操作区
               if (onResume != null)
-                IconButton.filledTonal(
+                IconButton(
                   tooltip: '继续观看',
                   icon: const Icon(Icons.play_arrow_rounded),
                   onPressed: onResume,

@@ -18,7 +18,7 @@ void main() {
     );
     await tester.pump();
 
-    // 首页标题为「探索」（Rail 骨架下的探索首页）
-    expect(find.text('探索'), findsOneWidget);
+    expect(find.text('NovaPlay'), findsOneWidget);
+    expect(find.text('发现'), findsWidgets);
   });
 }

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:html/parser.dart' as html;
 import '../../core/network/http_client.dart';
 import '../../models/video_model.dart';
 import 'base_scraper.dart';
@@ -304,11 +305,22 @@ class LziApiScraper extends BaseScraper {
     final pic = item['vod_pic'] as String?;
     final blurb = item['vod_blurb'] as String?;
     final content = item['vod_content'] as String?;
-    // 清理 HTML 标签
-    final description = (blurb ?? content ?? '').replaceAll(
-      RegExp(r'<[^>]*>'),
-      '',
-    );
+    // CMS 的摘要可能损坏空格实体；优先从完整正文得到可读文本。
+    final rawDescription =
+        content != null && content.trim().isNotEmpty ? content : blurb ?? '';
+    final description =
+        (html
+                    .parseFragment(
+                      rawDescription.replaceAll(
+                        RegExp(r'<br\s*/?>|</p>|</div>', caseSensitive: false),
+                        '\n',
+                      ),
+                    )
+                    .text ??
+                '')
+            .replaceAll(RegExp(r'[ \t\u00a0\u3000]+'), ' ')
+            .replaceAll(RegExp(r' *\n+ *'), '\n\n')
+            .trim();
     final year = item['vod_year'] as String?;
     final area = item['vod_area'] as String?;
     final score = item['vod_score'] as String?;
