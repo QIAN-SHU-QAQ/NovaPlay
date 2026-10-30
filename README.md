@@ -1,107 +1,81 @@
 # NovaPlay
 
-一款面向 Windows 的动漫聚合播放器，基于 Flutter + media_kit 构建。抓取在线源、海报流式浏览、追番式收藏与观看历史续播，并内置了完整的桌面播放器控制栏。
+Windows 上的动漫聚合播放器，用 Flutter 和 media_kit 编写。可以浏览在线片库、搜索作品、选集播放，也能把作品加入收藏，从观看历史接着看。
 
-> ⚠️ 本项目仅供学习与 Flutter 桌面开发交流使用，不提供、不托管任何视频资源。所有内容的版权归原权利人所有。
+目前还在开发，没有发布可下载的安装包。想试用需要从源码运行；下载和弹幕尚未接通。
 
-## 界面预览
+![NovaPlay 深色主题，发现页](screenshots/home_dark.png)
 
-| 浅色主题 | 深色主题 |
-| :---: | :---: |
-| ![浅色](screenshots/home_light.png) | ![深色](screenshots/home_dark.png) |
+<details>
+<summary>查看浅色主题</summary>
 
-## 功能
+![NovaPlay 浅色主题，发现页](screenshots/home_light.png)
 
-- **在线源聚合** — maccms 风格 API 抓取；列表、分类与搜索在主源异常时回退备用源，按来源区分作品 ID；播放线路按 CDN 规则选择
-- **探索首页** — 16:9 热门横卡、继续观看、分类筛选、自适应海报网格、无限滚动
-- **全屏搜索** — 胶囊搜索框、类型筛选 chips、结果计数、海报/列表双视图、搜索历史持久化；连续搜索只展示最新请求结果，支持空结果提示与失败重试
-- **详情页三栏** — 海报列 / 信息列（选集缩略图卡、角色行）/ 数据列（Bangumi 评分、制作人员）
-- **播放器** — media_kit(mpv) 播放 m3u8；进度条含缓冲指示、倍速、音量、上下集、原生窗口全屏；失败可重试并保留当前集进度，切集保留音量与倍速
-- **键盘快捷键** — 空格播放暂停、`←`/`→` 快退快进、`↑`/`↓` 音量、`F` 全屏、`Esc` 退出（支持长按连发）
-- **收藏与历史** — 追番式宽横卡、观看进度持久化、一键续播、单条删除与清空
-- **双主题** — Material 3 种子色生成浅/深主题，支持跟随系统，选择持久化
-- **元数据刮削** — Bangumi 公开 API 补充评分、制作人员、角色与 CV，失败静默降级
+</details>
 
-## 技术栈
+[运行方法](#从源码运行) · [开发报告与待办](开发报告.md) · [反馈问题](https://github.com/QIAN-SHU-QAQ/NovaPlay/issues)
 
-| 层 | 选型 |
-|---|---|
-| 框架 | Flutter 3.29.3 / Dart 3.7.2 |
-| 视频播放 | media_kit（mpv 内核）+ audio_video_progress_bar |
-| 状态管理 | flutter_riverpod（手写 StateNotifierProvider，未用 codegen） |
-| 路由 | go_router（StatefulShellRoute 分支 + 全屏页） |
-| 网络 | dio |
-| 存储 | shared_preferences |
-| UI | Material 3、google_fonts、cached_network_image |
+## 现在能做什么
 
-## 快速开始
+- 浏览片库和分类，按标题搜索，查看简介与剧集列表。
+- 播放在线视频，切换剧集、倍速、音量和窗口全屏；播放失败时可重试。
+- 保存收藏、搜索历史和观看进度，从首页或历史页继续播放。
+- 切换浅色、深色或跟随系统的主题，重启后保留选择。
+- 从 Bangumi 补充评分、制作人员和角色资料，查不到时仍可查看作品和播放。
 
-### 环境要求
+搜索可以从侧栏或发现页右上角打开。播放器使用深色控件。
 
-- Flutter 3.29.3+（Dart 3.7.2+）
-- Windows 10/11 + Visual Studio 2022/2026（C++ 桌面开发负载）
+播放快捷键：空格暂停或继续，`←` / `→` 快退快进，`↑` / `↓` 调整音量，`F` 全屏，`Esc` 退出全屏。
 
-### 构建运行
+## 使用前需要知道
 
-```bash
-# 国内网络可先设置镜像
-export PUB_HOSTED_URL="https://pub.flutter-io.cn"
-export FLUTTER_STORAGE_BASE_URL="https://storage.flutter-io.cn"
+在线内容依赖第三方接口，作品、图片和播放地址可能失效。主源请求异常时会尝试备用源，全部失败时显示错误并支持重试；正常的空结果不会触发回退。
 
+首页的全部列表支持继续加载，分类与搜索目前只展示第一页。Bangumi 资料按标题搜索并取首项，可能匹配到同名作品或其他季度。
+
+下载页会说明功能尚未开放，不会生成下载任务。设置页目前可保存主题，其余未实现选项已禁用。弹幕、源管理和自动更新也还不能使用。
+
+收藏和观看历史保存在本机，没有账号同步。旧历史里的播放地址可能过期，此时可回到作品详情重新选集。
+
+## 从源码运行
+
+项目以 Windows 桌面端为开发和验证目标。准备 Git、Flutter SDK，以及带有 C++ 桌面开发组件和 Windows SDK 的 Visual Studio。
+
+`pubspec.yaml` 要求 Dart `^3.7.2`，没有单独声明 Flutter 最低版本。本地验证使用 Windows 11、Flutter 3.29.3 / Dart 3.7.2；Visual Studio 2026 的使用依赖本地 Flutter 工具补丁，环境细节见[开发报告](开发报告.md#构建环境)。
+
+在 PowerShell 中运行：
+
+```powershell
+git clone https://github.com/QIAN-SHU-QAQ/NovaPlay.git
+cd NovaPlay
+flutter doctor -v
 flutter pub get
-flutter run -d windows          # 开发调试
-flutter build windows --release # 产物在 build/windows/x64/runner/Release/
+flutter run -d windows
 ```
 
-### 测试
+如果下载依赖遇到网络问题，可以先在当前 PowerShell 会话设置镜像，再执行 `flutter pub get`：
 
-```bash
-flutter analyze   # 静态检查
-flutter test      # 单元测试 + 组件测试（全部离线，无需网络）
+```powershell
+$env:PUB_HOSTED_URL = "https://pub.flutter-io.cn"
+$env:FLUTTER_STORAGE_BASE_URL = "https://storage.flutter-io.cn"
 ```
 
-## 项目结构
+### 检查与构建
 
-```
-lib/
-├── core/
-│   ├── config/        # 主题（M3 双主题）、路由
-│   ├── network/       # dio 封装
-│   └── utils/         # 播放器启动 helper
-├── models/            # VideoModel / HistoryItem / BangumiInfo
-├── providers/         # Riverpod providers（视频流、搜索、收藏、历史、主题）
-├── services/
-│   ├── scraper/       # 数据源实现（LziApi / AniList）与注册表
-│   ├── bangumi_api.dart
-│   └── database_service.dart
-├── shared/widgets/    # 主骨架、海报卡、宽横卡
-└── features/          # 首页 / 搜索 / 详情 / 播放器 / 收藏 / 历史 / 下载 / 设置
+```powershell
+flutter analyze
+flutter test
+flutter build windows --release
 ```
 
-## 开发进度
+测试使用离线替身，不需要请求在线片库。实际播放与第三方接口的可用性需要另行实测。
 
-- [x] **Phase 0** 代码基线清理（analyze 0 issue）
-- [x] **Phase 1** 收藏 / 观看历史 / 续播 / 搜索历史持久化
-- [x] **Phase 2** UI 重做：M3 双主题设计系统、NavigationRail 骨架、全页面重构、播放器控制栏与快捷键
-- [ ] **Phase 3** 下载系统：纯 Dart m3u8 分片下载器（断点续传、任务持久化）
-- [ ] **Phase 4** 弹幕：canvas_danmaku + 弹弹play 数据源
-- [ ] **Phase 5** 打包分发：msix 安装包、应用图标、应用内更新
+构建目录为 `build/windows/x64/runner/Release/`。运行或复制程序时，请保留整个目录，包括 DLL 和 `data/`；只复制 `nova_play.exe` 无法正常运行。
 
-详细的技术决策、踩坑记录与后续路线见 [开发报告.md](开发报告.md)。
+## 继续开发
 
-### 数据源与兼容性
+接下来先补分类与搜索分页、设置持久化、作品资料匹配和失效地址续播，再做 HLS 下载、弹幕及发布流程。具体边界和验收条件放在[开发报告](开发报告.md)，提交记录保留了早期开发过程。
 
-- 旧的主源数字 ID 保持可用；备用源 ID 使用 `360zy:` 前缀，收藏与历史可区分不同来源的同号作品。
-- 主源详情借用备用线路时，保留原作品身份与剧集顺序，仅在标题、年份和剧集名称严格匹配时替换播放地址。
-- 主源详情不可用时，不会把主源数字 ID 直接交给备用源查询，可返回搜索重新查找。备用源不支持的分类会显示加载失败，避免请求错误分类。
-- 正常空列表与网络失败分别处理；全部数据源请求失败时展示错误并提供重试。
+报告问题时，附上 Windows 版本、操作步骤、出错页面和错误信息；涉及播放时补充作品、集数及是否能重现。请勿提交个人凭据。
 
-## 免责声明
-
-1. 本项目为技术学习项目，**不提供、不存储、不分发任何视频资源**，所有播放内容均来自第三方公开接口。
-2. 程序仅做网络请求与本地播放，不对内容合法性负责。使用者应自行遵守所在地法律法规。
-3. 若相关权利人认为本项目存在侵权，请通过 issue 联系，将及时处理。
-
-## 许可
-
-[MIT License](LICENSE)
+代码采用 [MIT 许可](LICENSE)。应用从第三方接口读取内容，仓库不托管视频；视频、海报和作品资料的权利归各自权利人。

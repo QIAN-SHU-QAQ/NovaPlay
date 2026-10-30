@@ -3,8 +3,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../models/video_model.dart';
 
-/// 2:3 海报卡：底部渐变内嵌标题（海报内标题），右上角可选评分徽章。
-/// 用于搜索结果海报模式、首页网格等场景。
+/// A bounded grid tile: cover, two title lines and a metadata line.
+/// Use a grid childAspectRatio near 0.57 so the image remains portrait shaped.
 class PosterCard extends StatelessWidget {
   final VideoModel video;
   final VoidCallback? onTap;
@@ -13,103 +13,86 @@ class PosterCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          color: colorScheme.surfaceContainerHigh,
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Stack(
-          fit: StackFit.expand,
+    final colors = Theme.of(context).colorScheme;
+    final metadata = [
+      video.year,
+      video.genre,
+    ].whereType<String>().where((value) => value.trim().isNotEmpty).join(' · ');
+    final cover = video.cover;
+    return Material(
+      color: colors.surface,
+      borderRadius: BorderRadius.circular(6),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        hoverColor: colors.primary.withValues(alpha: 0.08),
+        focusColor: colors.primary.withValues(alpha: 0.16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 封面
-            if (video.cover != null && video.cover!.isNotEmpty)
-              CachedNetworkImage(
-                imageUrl: video.cover!.startsWith('http')
-                    ? video.cover!
-                    : 'https://yhdm.me${video.cover}',
-                fit: BoxFit.cover,
-                placeholder: (context, url) => _buildPlaceholder(context),
-                errorWidget: (context, url, error) => _buildPlaceholder(context),
-              )
-            else
-              _buildPlaceholder(context),
-
-            // 底部渐变 + 海报内标题
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: Container(
-                padding: const EdgeInsets.fromLTRB(10, 24, 10, 10),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [Colors.transparent, Colors.black87],
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                  ),
-                ),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child:
+                    cover != null && cover.isNotEmpty
+                        ? CachedNetworkImage(
+                          imageUrl:
+                              cover.startsWith('http')
+                                  ? cover
+                                  : 'https://yhdm.me$cover',
+                          fit: BoxFit.cover,
+                          placeholder: (_, __) => _placeholder(context),
+                          errorWidget: (_, __, ___) => _placeholder(context),
+                        )
+                        : _placeholder(context),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(3, 8, 3, 0),
+              child: SizedBox(
+                height: 36,
                 child: Text(
                   video.title,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
                     fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    height: 1.25,
+                    height: 1.35,
+                    fontWeight: FontWeight.w500,
+                    color: colors.onSurface,
                   ),
                 ),
               ),
             ),
-
-            // 评分徽章
-            if (video.rating != null)
-              Positioned(
-                top: 6,
-                right: 6,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    video.rating!.toStringAsFixed(1),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(3, 3, 3, 4),
+              child: Text(
+                metadata.isEmpty ? (video.description ?? '') : metadata,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  height: 1.4,
+                  color: colors.onSurfaceVariant,
                 ),
               ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildPlaceholder(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [colorScheme.primaryContainer, colorScheme.surfaceContainerHigh],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-      ),
+  Widget _placeholder(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return ColoredBox(
+      color: colors.surfaceContainerHigh,
       child: Center(
         child: Icon(
           Icons.movie_outlined,
-          size: 36,
-          color: colorScheme.onSurfaceVariant,
+          size: 30,
+          color: colors.onSurfaceVariant,
         ),
       ),
     );

@@ -66,6 +66,11 @@ void main() {
       reason: '播放器控件应使用内部深色主题，即使应用外层是浅色主题',
     );
     expect(find.text('播放失败'), findsOneWidget);
+    final danmakuButton = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.subtitles_outlined),
+    );
+    expect(danmakuButton.tooltip, '弹幕尚未开放');
+    expect(danmakuButton.onPressed, isNull);
     platform.fail = false;
     await tester.tap(find.text('重试'));
     await tester.pumpAndSettle();

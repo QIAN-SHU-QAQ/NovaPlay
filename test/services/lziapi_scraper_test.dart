@@ -126,6 +126,18 @@ void main() {
     expect(await scraper.search('不存在'), isEmpty);
     expect(adapter.requests.length, 1);
   });
+  test('简介优先解析完整正文，解码实体并保留段落', () async {
+    respond(
+      (_) => _list([
+        {
+          ..._video(1),
+          'vod_blurb': '截断摘要 &amp;    ;',
+          'vod_content': '<p>甲&nbsp;&amp; 乙</p><p>下一段</p>',
+        },
+      ]),
+    );
+    expect((await scraper.search('番剧')).single.description, '甲 & 乙\n\n下一段');
+  });
   test('所有源失败抛出可见错误', () async {
     respond(_fail);
     await expectLater(

@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nova_play/app.dart';
@@ -58,10 +57,10 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('加载失败'), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, '重试'), findsOneWidget);
+    expect(find.text('重试'), findsOneWidget);
 
     adapter.online = true;
-    await tester.tap(find.widgetWithText(FilledButton, '重试'));
+    await tester.tap(find.text('重试'));
     await tester.pumpAndSettle();
     expect(find.text('加载失败'), findsNothing);
     expect(find.text('恢复成功'), findsWidgets);
