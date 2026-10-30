@@ -22,13 +22,16 @@ class HttpClient {
       ),
     );
 
-    _dio.interceptors.add(
-      LogInterceptor(
-        requestBody: false,
-        responseBody: false,
-        logPrint: (obj) => debugPrint('[HTTP] $obj'),
-      ),
-    );
+    // 仅 debug 构建打印请求日志：release 下既拖慢性能，也会把完整 URL 写进日志。
+    if (kDebugMode) {
+      _dio.interceptors.add(
+        LogInterceptor(
+          requestBody: false,
+          responseBody: false,
+          logPrint: (obj) => debugPrint('[HTTP] $obj'),
+        ),
+      );
+    }
   }
 
   Dio get dio => _dio;
