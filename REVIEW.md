@@ -1,6 +1,8 @@
 # NovaPlay 代码评审与改进建议
 
-> 更新（2026-10-30）：P0-1（播放器生命周期/错误重试）、P0-2（历史写入串行化 + 15s 节流）、P0-3（可配置数据源 + 显式错误）已修复；工程化项已完成 GitHub Actions CI、全量 `dart format`、README 构建前提说明。
+> 更新（2026-10-30 晚）：已同步上游 main（`f8c6764`，上游 force-push 重写历史：播放器改为 PlaybackSession/FullscreenSession、数据源可靠性修复、UI 重写、新增 78 个测试、文档重写）。本文件中的播放器生命周期等问题上游已自行解决；本地保留并移植了「写入串行化、可配置数据源、m3u8 下载器、CI」等增量。以下内容保留作历史记录，最新状态见 `state/current-state.md`。
+>
+> 更新（2026-10-30 上午）：P0-1（播放器生命周期/错误重试）、P0-2（历史写入串行化 + 15s 节流）、P0-3（可配置数据源 + 显式错误）已修复；工程化项已完成 GitHub Actions CI、全量 `dart format`、README 构建前提说明。
 >
 > 评审日期：2026-10-29 ｜ 评审对象：`QIAN-SHU-QAQ/NovaPlay` @ `c57c3cb`
 > 评审方式：源码通读 + 实际执行 `pub get` / `analyze` / `test` / `build` / `format` 检查
