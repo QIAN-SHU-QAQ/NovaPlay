@@ -9,6 +9,7 @@ import 'app.dart';
 import 'core/window/player_window_bridge.dart';
 import 'features/player/player_window.dart';
 import 'services/database_service.dart';
+import 'services/prefs_bridge.dart';
 
 /// 主窗口与独立播放进程共用同一个入口。
 ///
@@ -34,6 +35,12 @@ Future<void> main(List<String> args) async {
       }
     }
 
+    // 配置写入统一交给主进程，避免两个进程互相覆盖整份配置。
+    final bridgePort = arguments['bridgePort'];
+    if (bridgePort is int && bridgePort > 0) {
+      DatabaseService().attachBridge(PrefsBridgeClient(bridgePort));
+    }
+
     await windowManager.ensureInitialized();
     await windowManager.setTitle('NovaPlay 播放器');
     await windowManager.setSize(const Size(1280, 720));
@@ -42,6 +49,12 @@ Future<void> main(List<String> args) async {
     runApp(PlayerWindowApp(arguments: arguments));
     return;
   }
+
+  // 主窗口进程是唯一持久化写入方：播放器进程通过本机 HTTP 把写操作交给这里。
+  await PrefsBridgeServer.start(
+    onSet: (key, value) => DatabaseService().applyRemoteSet(key, value),
+    onRemove: (key) => DatabaseService().applyRemoteSet(key, null),
+  );
 
   runApp(const ProviderScope(child: NovaPlayApp()));
 }

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../models/history_item.dart';
+import '../../services/prefs_bridge.dart';
 
 /// 当前进程是否运行在 `flutter test` 里（测试环境不启动独立进程）。
 bool get _isFlutterTest =>
@@ -37,6 +38,8 @@ Future<void> launchPlayer(
     'videoId': videoId,
     'videoTitle': videoTitle,
     'cover': cover,
+    // 主进程配置桥端口：播放器的进度/设置写入经由主进程持久化。
+    'bridgePort': PrefsBridgeServer.instance?.port,
   };
 
   if (!kIsWeb && Platform.isWindows && !_isFlutterTest) {
