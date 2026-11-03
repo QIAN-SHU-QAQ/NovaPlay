@@ -118,6 +118,32 @@ flutter build windows --release
 
 构建目录为 `build/windows/x64/runner/Release/`。运行或复制程序时，请保留整个目录，包括 DLL 和 `data/`；只复制 `nova_play.exe` 无法正常运行。
 
+### Windows 播放失败排查（Low 完整性标签）
+
+如果播放时界面显示：
+
+```
+PathAccessException: Cannot create file, path = '\?\C:\Users\<用户>\AppData\Local\Temp\...' (OS Error: 拒绝访问, errno = 5)
+```
+
+通常是**运行目录里的文件带了 Low 完整性标签**（某些沙箱化构建/复制环境会把子进程降到 Low IL，其产物会继承 Low 标签）。Windows 会据此以 Low 完整性启动程序，media_kit 因此无法在 `%TEMP%` 创建临时播放列表文件，视频无法播放。
+
+检查与修复（在 PowerShell 中执行）：
+
+```powershell
+# 查看是否带 Low 标签
+icacls "E:\项目\NovaPlay\运行版" /T | Select-String "Mandatory Label"
+# 统一改成 Medium（对整个运行目录执行一次）
+icacls "E:\项目\NovaPlay\运行版" /setintegritylevel Medium /T
+```
+
+修复后重新启动应用，任务管理器中 `nova_play.exe` 的完整性级别应为「中等 / Medium」。以后每次构建并复制到运行目录后，如果构建环境是沙箱（或用脚本部署），都需要重新执行这条命令；仓库里的 `scripts/deploy-release.ps1` 会自动完成复制、修正标签和更新快捷方式：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\deploy-release.ps1
+```
+
+
 ## 参考
 
 弹幕功能选型时做过的调研（结论：渲染直接用 MIT 依赖，数据协议自行实现）：
