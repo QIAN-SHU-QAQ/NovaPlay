@@ -299,8 +299,11 @@ class DownloadService {
     } catch (e) {
       final cancelled =
           token.isCancelled || (e is DioException && CancelToken.isCancel(e));
+      // 基于当前任务写回状态/错误：暂停时 pauseTask 已把状态改成 paused，
+      // 如果用 _run 开始时的旧副本会顺带把最新进度覆盖回 0。
+      final current = _find(task.id) ?? task;
       _replace(
-        task.copyWith(
+        current.copyWith(
           status: cancelled ? DownloadStatus.paused : DownloadStatus.failed,
           error: cancelled ? null : e.toString(),
           clearError: cancelled,

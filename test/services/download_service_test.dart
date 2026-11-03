@@ -13,6 +13,7 @@ class _Adapter implements HttpClientAdapter {
   _Adapter(this.responses);
 
   final Map<String, List<int>> responses;
+  final Map<String, Duration> delays = {};
   final List<String> requests = [];
 
   @override
@@ -23,6 +24,10 @@ class _Adapter implements HttpClientAdapter {
   ) async {
     final url = options.uri.toString();
     requests.add(url);
+    final delay = delays[url];
+    if (delay != null) {
+      await Future<void>.delayed(delay);
+    }
     final data = responses[url];
     if (data == null) {
       return ResponseBody.fromString('not found', 404);
@@ -146,6 +151,41 @@ s1.ts
     expect(service.tasks, isEmpty);
     expect(File(savePath).existsSync(), isFalse);
     expect(Directory('$savePath.segments').existsSync(), isFalse);
+  });
+
+  test('暂停后保留当前进度，继续下载从断点完成', () async {
+    // 第二个分片故意变慢，留出"下载中暂停"的窗口。
+    adapter.delays['https://cdn.test/hls/s1.ts'] = const Duration(
+      milliseconds: 500,
+    );
+
+    final task = await service.addTask(title: '暂停进度', url: playlistUrl);
+    // 2 个分片、并发 1：第一个完成后进度应为 0.5
+    await _waitFor(() => service.tasks.single.progress >= 0.5);
+    service.pauseTask(task.id);
+    await _waitFor(() => service.tasks.single.status == DownloadStatus.paused);
+
+    // 回归点：暂停后进度不能被重置为 0（旧实现用 _run 开始时的任务副本覆盖）
+    expect(service.tasks.single.progress, greaterThanOrEqualTo(0.5));
+
+    final prefs = await SharedPreferences.getInstance();
+    await _waitFor(() => prefs.getString('downloads_v1') != null);
+    final persisted = jsonDecode(prefs.getString('downloads_v1')!) as List;
+    final persistedProgress =
+        ((persisted.first as Map)['progress'] as num).toDouble();
+    expect(persistedProgress, greaterThanOrEqualTo(0.5));
+
+    service.resumeTask(task.id);
+    await _waitFor(
+      () => service.tasks.single.status == DownloadStatus.completed,
+    );
+    expect(File(service.tasks.single.savePath).readAsBytesSync(), [
+      1,
+      2,
+      3,
+      4,
+      5,
+    ]);
   });
 
   test('任务持久化：重启后恢复，未完成任务标记为暂停', () async {
