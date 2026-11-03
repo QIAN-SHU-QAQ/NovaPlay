@@ -26,5 +26,5 @@ class HistoryNotifier extends StateNotifier<List<HistoryItem>> {
 
 final historyProvider =
     StateNotifierProvider<HistoryNotifier, List<HistoryItem>>((ref) {
-  return HistoryNotifier();
-});
+      return HistoryNotifier();
+    });

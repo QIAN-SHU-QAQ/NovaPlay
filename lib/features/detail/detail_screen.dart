@@ -8,6 +8,7 @@ import '../../core/utils/play_launcher.dart';
 import '../../models/bangumi_info.dart';
 import '../../models/video_model.dart';
 import '../../providers/bangumi_provider.dart';
+import '../../providers/download_provider.dart';
 import '../../providers/favorites_provider.dart';
 import '../../providers/history_provider.dart';
 import '../../providers/scraper_provider.dart';
@@ -326,6 +327,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                     index: i,
                     isCurrent: i == watchedIndex,
                     onTap: () => _playEpisode(video, i),
+                    onDownload: () => _downloadEpisode(video, i),
                   ),
               ],
             ),
@@ -555,6 +557,48 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
     }
   }
 
+  Future<void> _downloadEpisode(VideoModel video, int index) async {
+    final episode = video.episodes![index];
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('正在解析下载地址...')));
+
+    try {
+      var url = episode.playUrl;
+      if (url == null || url.isEmpty) {
+        final scraper = ref.read(currentScraperProvider);
+        final playUrls = await scraper.getPlayUrls(episode.url);
+        if (playUrls.isEmpty) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('暂无可用播放源，无法下载')));
+          return;
+        }
+        url = playUrls.first;
+      }
+
+      await ref
+          .read(downloadTasksProvider.notifier)
+          .addTask(
+            title: '${video.title} - ${episode.title}',
+            url: url,
+            videoId: video.id,
+            cover: video.cover,
+          );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已加入下载队列，可在「下载」页查看')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('添加下载失败: $e')));
+    }
+  }
+
   void _toggleFavorite(VideoModel video) {
     ref.read(favoritesProvider.notifier).toggle(video).then((_) {
       if (!mounted) return;
@@ -584,37 +628,59 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
 
 // ---------- 私有小部件 ----------
 
-/// 选集按钮，当前观看集描边提示。
+/// 选集按钮，当前观看集描边提示；右上角可单独下载该集。
 class _EpisodeThumbCard extends StatelessWidget {
   final String title;
   final int index;
   final bool isCurrent;
   final VoidCallback onTap;
+  final VoidCallback? onDownload;
 
   const _EpisodeThumbCard({
     required this.title,
     required this.index,
     required this.isCurrent,
     required this.onTap,
+    this.onDownload,
   });
 
   @override
   Widget build(BuildContext context) => SizedBox(
     width: 136,
-    child: OutlinedButton(
-      onPressed: onTap,
-      style:
-          isCurrent
-              ? OutlinedButton.styleFrom(
-                side: BorderSide(color: Theme.of(context).colorScheme.primary),
-                foregroundColor: Theme.of(context).colorScheme.primary,
-              )
-              : null,
-      child: Text(
-        title.isEmpty ? '第 ${index + 1} 集' : title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
+    child: Stack(
+      clipBehavior: Clip.none,
+      children: [
+        OutlinedButton(
+          onPressed: onTap,
+          style:
+              isCurrent
+                  ? OutlinedButton.styleFrom(
+                    side: BorderSide(
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    foregroundColor: Theme.of(context).colorScheme.primary,
+                  )
+                  : null,
+          child: Text(
+            title.isEmpty ? '第 ${index + 1} 集' : title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (onDownload != null)
+          Positioned(
+            top: -6,
+            right: -6,
+            child: IconButton(
+              tooltip: '下载本集',
+              iconSize: 16,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+              icon: const Icon(Icons.download_outlined),
+              onPressed: onDownload,
+            ),
+          ),
+      ],
     ),
   );
 }

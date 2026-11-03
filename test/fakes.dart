@@ -26,10 +26,8 @@ class FakeScraper extends BaseScraper {
   Future<List<VideoModel>> search(String keyword, {int page = 1}) async => [];
 
   @override
-  Future<VideoModel> getDetail(String url) => Future.value(VideoModel(
-        id: url,
-        title: 'Fake',
-      ));
+  Future<VideoModel> getDetail(String url) =>
+      Future.value(VideoModel(id: url, title: 'Fake'));
 
   @override
   Future<List<String>> getPlayUrls(String episodeUrl) async => [];

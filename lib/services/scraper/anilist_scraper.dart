@@ -61,7 +61,10 @@ class AniListScraper extends BaseScraper {
   }
 
   @override
-  Future<List<VideoModel>> getByCategory(String category, {int page = 1}) async {
+  Future<List<VideoModel>> getByCategory(
+    String category, {
+    int page = 1,
+  }) async {
     String sort = 'POPULARITY_DESC';
     String? genre;
 
@@ -219,10 +222,18 @@ class AniListScraper extends BaseScraper {
     final synonyms = (item['synonyms'] as List?)?.cast<String>() ?? [];
     final chineseTitle = _findChineseTitle(synonyms);
     // 优先中文，其次日文，其次英文，最后罗马音
-    final displayTitle = chineseTitle ?? title['native'] ?? title['english'] ?? title['romaji'] ?? '未知';
+    final displayTitle =
+        chineseTitle ??
+        title['native'] ??
+        title['english'] ??
+        title['romaji'] ??
+        '未知';
     final cover = item['coverImage']?['large'];
     final score = item['averageScore'];
-    final description = item['description']?.toString().replaceAll(RegExp(r'<[^>]*>'), '');
+    final description = item['description']?.toString().replaceAll(
+      RegExp(r'<[^>]*>'),
+      '',
+    );
     final episodes = item['episodes'];
     final genres = (item['genres'] as List?)?.join(' / ');
     final year = item['startDate']?['year']?.toString();
@@ -236,17 +247,18 @@ class AniListScraper extends BaseScraper {
       year: year,
       genre: genres,
       source: name,
-      episodes: episodes != null
-          ? List.generate(
-              episodes,
-              (i) => EpisodeModel(
-                id: 'ep_${i + 1}',
-                title: '第 ${i + 1} 集',
-                url: '${item['id']}/episode/${i + 1}',
-                index: i,
-              ),
-            )
-          : null,
+      episodes:
+          episodes != null
+              ? List.generate(
+                episodes,
+                (i) => EpisodeModel(
+                  id: 'ep_${i + 1}',
+                  title: '第 ${i + 1} 集',
+                  url: '${item['id']}/episode/${i + 1}',
+                  index: i,
+                ),
+              )
+              : null,
     );
   }
 
@@ -256,10 +268,18 @@ class AniListScraper extends BaseScraper {
     final synonyms = (media['synonyms'] as List?)?.cast<String>() ?? [];
     final chineseTitle = _findChineseTitle(synonyms);
     // 优先中文，其次日文，其次英文，最后罗马音
-    final displayTitle = chineseTitle ?? title['native'] ?? title['english'] ?? title['romaji'] ?? '未知';
+    final displayTitle =
+        chineseTitle ??
+        title['native'] ??
+        title['english'] ??
+        title['romaji'] ??
+        '未知';
     final cover = media['coverImage']?['large'];
     final score = media['averageScore'];
-    final description = media['description']?.toString().replaceAll(RegExp(r'<[^>]*>'), '');
+    final description = media['description']?.toString().replaceAll(
+      RegExp(r'<[^>]*>'),
+      '',
+    );
     final episodes = media['episodes'];
     final genres = (media['genres'] as List?)?.join(' / ');
     final year = media['startDate']?['year']?.toString();
@@ -273,17 +293,18 @@ class AniListScraper extends BaseScraper {
       year: year,
       genre: genres,
       source: name,
-      episodes: episodes != null
-          ? List.generate(
-              episodes,
-              (i) => EpisodeModel(
-                id: 'ep_${i + 1}',
-                title: '第 ${i + 1} 集',
-                url: '${media['id']}/episode/${i + 1}',
-                index: i,
-              ),
-            )
-          : null,
+      episodes:
+          episodes != null
+              ? List.generate(
+                episodes,
+                (i) => EpisodeModel(
+                  id: 'ep_${i + 1}',
+                  title: '第 ${i + 1} 集',
+                  url: '${media['id']}/episode/${i + 1}',
+                  index: i,
+                ),
+              )
+              : null,
     );
   }
 

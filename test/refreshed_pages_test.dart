@@ -69,11 +69,13 @@ void main() {
       await tester.pump();
       expect(container.read(themeModeProvider), option.$2);
     }
-    final tile = tester.widget<ListTile>(
-      find.ancestor(of: find.text('自动播放下一集'), matching: find.byType(ListTile)),
+    // 自动连播已接通：是 SwitchListTile，默认开启
+    final autoPlayTile = tester.widget<SwitchListTile>(
+      find.widgetWithText(SwitchListTile, '自动播放下一集'),
     );
-    expect(tile.enabled, isFalse);
-    expect(tile.onTap, isNull);
+    expect(autoPlayTile.value, isTrue);
+    // 弹幕账号/样式已接通；下载路径、检查更新仍是占位（需要滚动到底部）
+    await tester.scrollUntilVisible(find.text('检查更新'), 300);
     expect(find.text('尚未开放'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
@@ -108,8 +110,10 @@ void main() {
   testWidgets('download page explains availability without simulated tasks', (
     tester,
   ) async {
-    await tester.pumpWidget(const MaterialApp(home: DownloadScreen()));
-    expect(find.text('下载功能还在开发'), findsOneWidget);
+    await tester.pumpWidget(
+      const ProviderScope(child: MaterialApp(home: DownloadScreen())),
+    );
+    expect(find.text('还没有下载任务'), findsOneWidget);
     expect(find.byType(LinearProgressIndicator), findsNothing);
     expect(find.text('编辑'), findsNothing);
   });

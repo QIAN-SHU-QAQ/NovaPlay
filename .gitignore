@@ -24,3 +24,13 @@ screenshots/capture.ps1
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Flutter crash logs
+flutter_*.log
+
+# 本地运行版与项目状态文件（收纳在项目目录内，不入仓库）
+运行版/
+state/
+
+# 本地 agent 配置（项目专属 skill，随文件夹保留但不入仓库）
+.dsh/

@@ -5,25 +5,55 @@ import 'package:html/parser.dart' as html;
 import '../../core/network/http_client.dart';
 import '../../models/video_model.dart';
 import 'base_scraper.dart';
+import 'source_config.dart';
 
-/// LziApi 数据源 - 基于 maccms CMS 的动漫视频源
-/// 提供真实可播放的 m3u8 视频地址
+/// maccms 风格 API 数据源。
+///
+/// 默认使用内置的两个源（LziApi 主源、360zy 备用源），但源本身由
+/// [SourceConfig] 驱动：用户可以新增/启停/切换数据源（见设置页）。
+/// 主源失败时按顺序回退到其余启用的源；作品 ID 用 `<sourceId>:` 前缀做命名空间，
+/// 保证不同源的同号作品互不覆盖收藏/历史。
 class LziApiScraper extends BaseScraper {
-  @override
-  String get name => 'LziApi';
+  LziApiScraper({SourceConfig? primary, List<SourceConfig>? fallbacks})
+    : primary = primary ?? SourceConfig.defaults().first,
+      _fallbacks = fallbacks ?? SourceConfig.defaults().skip(1).toList();
+
+  /// 主源
+  final SourceConfig primary;
+
+  /// 备用源（仅启用的会参与回退）
+  final List<SourceConfig> _fallbacks;
+
+  final HttpClient _httpClient = HttpClient();
+
+  /// 实际参与请求的源顺序：[primary, ...启用的 fallbacks]
+  late final List<SourceConfig> _sources = [
+    primary,
+    ..._fallbacks.where((s) => s.enabled && s.id != primary.id),
+  ];
 
   @override
-  String get baseUrl => 'https://cj.lziapi.com/api.php/provide/vod/';
+  String get name => primary.name;
+
+  @override
+  String get baseUrl => primary.baseUrl;
 
   @override
   String get icon => '🎬';
 
-  final HttpClient _httpClient = HttpClient();
+  // maccms 分类 ID
+  static const int _typeGuochan = 29; // 国产动漫
+  static const int _typeRihan = 30; // 日韩动漫
+  static const int _typeOumei = 31; // 欧美动漫
+  static const int _typeGangtai = 32; // 港台动漫
+  static const int _typeHaiwai = 33; // 海外动漫
 
-  // 作品 ID 的命名空间必须与实际请求源一致；旧数字 ID 仍属于主源。
-  static const List<String> _apiSources = [
-    'https://cj.lziapi.com/api.php/provide/vod/',
-    'https://360zy.com/api.php/provide/vod/',
+  /// 快速 CDN 域名列表（按速度排序）
+  static const List<String> _fastCdnDomains = [
+    'vod1.maowushi.com', // 360zy.com 的 CDN，速度快
+    'v.cdnlz22.com',
+    'v.lzcdn27.com',
+    'v.lzcdn31.com',
   ];
 
   /// 解析 JSON 响应
@@ -36,7 +66,7 @@ class LziApiScraper extends BaseScraper {
     int source = 0,
   }) async {
     final response = await _httpClient.get(
-      _apiSources[source],
+      _sources[source].baseUrl,
       queryParameters: params,
       options: Options(
         responseType: ResponseType.json,
@@ -55,31 +85,38 @@ class LziApiScraper extends BaseScraper {
     return data;
   }
 
-  final Map<String, String> _backupCategories = {};
+  /// 每个备用源的分类名 → type_id 映射（按需拉取并缓存）
+  final Map<int, Map<String, String>> _categoryCache = {};
 
-  Future<String> _backupCategory(String category) async {
-    if (!_backupCategories.containsKey(category)) {
-      final data = await _fetchData({'ac': 'list'}, source: 1);
-      for (final entry in data['class'] as List) {
-        _backupCategories[entry['type_name'].toString()] =
-            entry['type_id'].toString();
+  Future<String> _backupCategory(int source, String category) async {
+    var mapping = _categoryCache[source];
+    if (mapping == null) {
+      final data = await _fetchData({'ac': 'list'}, source: source);
+      mapping = <String, String>{};
+      for (final entry in (data['class'] as List? ?? const [])) {
+        if (entry is Map) {
+          mapping[entry['type_name'].toString()] = entry['type_id'].toString();
+        }
       }
+      _categoryCache[source] = mapping;
     }
-    final id = _backupCategories[category];
-    if (id == null) throw StateError('备用数据源不支持该分类');
+    final id = mapping[category];
+    if (id == null) {
+      throw StateError('数据源 ${_sources[source].name} 不支持该分类');
+    }
     return id;
   }
 
-  /// 空列表是有效结果；只有请求或协议异常才回退。
+  /// 空列表是有效结果；只有请求或协议异常才回退到下一个源。
   Future<List<VideoModel>> _listWithFallback(
     Map<String, dynamic> params, {
     String? category,
   }) async {
-    for (var source = 0; source < _apiSources.length; source++) {
+    for (var source = 0; source < _sources.length; source++) {
       try {
         final query = Map<String, dynamic>.of(params);
-        if (source == 1 && category != null) {
-          query['t'] = await _backupCategory(category);
+        if (source > 0 && category != null) {
+          query['t'] = await _backupCategory(source, category);
         }
         final data = await _fetchData(query, source: source);
         return (data['list'] as List)
@@ -89,18 +126,11 @@ class LziApiScraper extends BaseScraper {
             )
             .toList();
       } catch (e) {
-        debugPrint('视频数据源 ${source == 0 ? name : '360zy'} 请求失败: $e');
+        debugPrint('视频数据源 ${_sources[source].name} 请求失败: $e');
       }
     }
     throw Exception('视频数据源暂时不可用，请检查网络后重试');
   }
-
-  // maccms 分类 ID
-  static const int _typeGuochan = 29; // 国产动漫
-  static const int _typeRihan = 30; // 日韩动漫
-  static const int _typeOumei = 31; // 欧美动漫
-  static const int _typeGangtai = 32; // 港台动漫
-  static const int _typeHaiwai = 33; // 海外动漫
 
   @override
   Future<List<String>> getCategories() async {
@@ -150,10 +180,20 @@ class LziApiScraper extends BaseScraper {
     return _listWithFallback({'ac': 'detail', 'wd': keyword, 'pg': page});
   }
 
+  /// 解析带命名空间的作品 ID：默认源为纯数字，其它源为 `<sourceId>:<vodId>`。
+  (int, String) _decodeId(String raw) {
+    for (var i = 1; i < _sources.length; i++) {
+      final prefix = '${_sources[i].id}:';
+      if (raw.startsWith(prefix)) {
+        return (i, raw.substring(prefix.length));
+      }
+    }
+    return (0, raw);
+  }
+
   @override
   Future<VideoModel> getDetail(String url) async {
-    final source = url.startsWith('360zy:') ? 1 : 0;
-    final id = source == 1 ? url.substring('360zy:'.length) : url;
+    final (sourceIndex, id) = _decodeId(url);
     if (!RegExp(r'^\d+$').hasMatch(id)) {
       throw Exception('无效的视频标识，请重新搜索作品');
     }
@@ -161,19 +201,20 @@ class LziApiScraper extends BaseScraper {
       final data = await _fetchData({
         'ac': 'detail',
         'ids': id,
-      }, source: source);
+      }, source: sourceIndex);
 
-      if ((data['list'] as List).isEmpty) {
+      final list = data['list'] as List;
+      if (list.isEmpty) {
         throw Exception('未找到视频详情');
       }
 
-      final item = data['list'][0];
+      final item = list[0] as Map<String, dynamic>;
       if (item['vod_id'].toString() != id) {
         throw const FormatException('数据源返回了不匹配的作品标识');
       }
-      final video = _parseVideo(item, source: source);
+      final video = _parseVideo(item, source: sourceIndex);
 
-      // 如果主源的 CDN 慢，尝试从备用源获取更快的播放地址
+      // 如果当前源的 CDN 慢，尝试从其它源获取更快的播放地址
       final hasFastCdn =
           video.episodes?.any((ep) {
             final playUrl = ep.playUrl ?? '';
@@ -181,33 +222,33 @@ class LziApiScraper extends BaseScraper {
           }) ??
           false;
 
-      if (source == 0 &&
+      // 只有主源详情才尝试用其它源替换播放地址（备用源本身已是备选，
+      // 再回主源会引入额外请求并改变作品来源语义）。
+      if (sourceIndex == 0 &&
           !hasFastCdn &&
           video.title.isNotEmpty &&
           _hasExplicitEpisodeTitles(item) &&
           video.year != null &&
           video.year!.trim().isNotEmpty) {
-        try {
-          final backupData = await _fetchData({
-            'ac': 'detail',
-            'wd': video.title,
-          }, source: 1);
+        for (var backup = 0; backup < _sources.length; backup++) {
+          if (backup == sourceIndex) continue;
+          try {
+            final backupData = await _fetchData({
+              'ac': 'detail',
+              'wd': video.title,
+            }, source: backup);
 
-          final backupList = backupData['list'] as List;
-          // 查找匹配的视频
-          for (final backupItem in backupList) {
-            final backupName = (backupItem['vod_name'] as String?) ?? '';
-            if (backupName.trim() == video.title.trim() &&
-                _hasExplicitEpisodeTitles(backupItem) &&
-                backupItem['vod_year']?.toString().trim() ==
-                    video.year!.trim()) {
-              final backupVideo = _parseVideo(backupItem, source: 1);
-              if (backupVideo.episodes != null &&
-                  backupVideo.episodes!.isNotEmpty &&
-                  backupVideo.episodes!.first.playUrl != null &&
-                  backupVideo.episodes!.first.playUrl!.contains('.m3u8')) {
+            final backupList = backupData['list'] as List;
+            for (final backupItem in backupList) {
+              if (backupItem is! Map<String, dynamic>) continue;
+              final backupName = (backupItem['vod_name'] as String?) ?? '';
+              if (backupName.trim() == video.title.trim() &&
+                  _hasExplicitEpisodeTitles(backupItem) &&
+                  backupItem['vod_year']?.toString().trim() ==
+                      video.year!.trim()) {
+                final backupVideo = _parseVideo(backupItem, source: backup);
                 final episodes = video.episodes ?? <EpisodeModel>[];
-                final replacements = backupVideo.episodes!;
+                final replacements = backupVideo.episodes ?? <EpisodeModel>[];
                 // 保留集数、顺序和剧集 ID，避免跨源缺集/特典造成续播错位。
                 if (episodes.isEmpty ||
                     episodes.length != replacements.length ||
@@ -240,9 +281,9 @@ class LziApiScraper extends BaseScraper {
                 );
               }
             }
+          } catch (e) {
+            debugPrint('备用源 ${_sources[backup].name} 失败: $e');
           }
-        } catch (e) {
-          debugPrint('Backup source failed: $e');
         }
       }
 
@@ -263,13 +304,13 @@ class LziApiScraper extends BaseScraper {
     // 如果是 share 链接，尝试解析出 m3u8 地址
     try {
       final response = await _httpClient.get(episodeUrl);
-      final html = response.data.toString();
+      final content = response.data.toString();
 
       // 从 HTML 中提取 m3u8 地址
       final m3u8Regex = RegExp(r'var\s+main\s*=\s*"([^"]+\.m3u8[^"]*)"');
-      final match = m3u8Regex.firstMatch(html);
+      final match = m3u8Regex.firstMatch(content);
       if (match != null) {
-        String m3u8Url = match.group(1)!;
+        var m3u8Url = match.group(1)!;
         // 如果是相对路径，补全为绝对路径
         if (m3u8Url.startsWith('/')) {
           final uri = Uri.parse(episodeUrl);
@@ -280,7 +321,7 @@ class LziApiScraper extends BaseScraper {
 
       // 尝试匹配其他格式的 m3u8
       final m3u8Regex2 = RegExp(r'https?://\S+\.m3u8\S*');
-      final matches = m3u8Regex2.allMatches(html);
+      final matches = m3u8Regex2.allMatches(content);
       if (matches.isNotEmpty) {
         return matches.map((m) => m.group(0)!).toList();
       }
@@ -293,7 +334,7 @@ class LziApiScraper extends BaseScraper {
   }
 
   /// 解析视频数据
-  VideoModel _parseVideo(Map<String, dynamic> item, {int source = 0}) {
+  VideoModel _parseVideo(Map<String, dynamic> item, {required int source}) {
     if (item['vod_id'] == null || item['vod_name'] is! String) {
       throw const FormatException('数据源缺少作品标识或标题');
     }
@@ -301,6 +342,7 @@ class LziApiScraper extends BaseScraper {
     if (!RegExp(r'^\d+$').hasMatch(vodId)) {
       throw const FormatException('数据源作品标识无效');
     }
+    final config = _sources[source];
     final title = item['vod_name'] as String;
     final pic = item['vod_pic'] as String?;
     final blurb = item['vod_blurb'] as String?;
@@ -341,26 +383,19 @@ class LziApiScraper extends BaseScraper {
     final episodes = _parseEpisodes(item);
 
     return VideoModel(
-      id: source == 0 ? vodId : '360zy:$vodId',
+      // 默认源保持纯数字 ID（兼容已有收藏/历史），其它源加命名空间前缀。
+      id: source == 0 ? vodId : '${config.id}:$vodId',
       title: title,
       cover: pic,
       description: description.isNotEmpty ? description : null,
       rating: rating,
       year: year,
       genre: className ?? area,
-      source: source == 0 ? name : '360zy',
-      sourceUrl: _apiSources[source],
+      source: config.name,
+      sourceUrl: config.baseUrl,
       episodes: episodes,
     );
   }
-
-  /// 快速 CDN 域名列表（按速度排序）
-  static const List<String> _fastCdnDomains = [
-    'vod1.maowushi.com', // 360zy.com 的 CDN，速度快
-    'v.cdnlz22.com',
-    'v.lzcdn27.com',
-    'v.lzcdn31.com',
-  ];
 
   /// 选择最佳播放源
   String _selectBestSource(List<String> sources) {

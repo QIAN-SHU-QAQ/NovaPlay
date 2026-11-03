@@ -36,12 +36,14 @@ class VideoModel {
       genre: json['genre'] as String?,
       source: json['source'] as String?,
       sourceUrl: json['sourceUrl'] as String?,
-      episodes: (json['episodes'] as List?)
-          ?.map((e) => EpisodeModel.fromJson(e as Map<String, dynamic>))
-          .toList(),
-      updatedAt: json['updatedAt'] != null
-          ? DateTime.parse(json['updatedAt'] as String)
-          : null,
+      episodes:
+          (json['episodes'] as List?)
+              ?.map((e) => EpisodeModel.fromJson(e as Map<String, dynamic>))
+              .toList(),
+      updatedAt:
+          json['updatedAt'] != null
+              ? DateTime.parse(json['updatedAt'] as String)
+              : null,
     );
   }
 

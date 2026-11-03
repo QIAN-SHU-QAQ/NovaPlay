@@ -13,8 +13,7 @@ class BangumiInfo {
     this.characters = const [],
   });
 
-  bool get isEmpty =>
-      score == null && staff.isEmpty && characters.isEmpty;
+  bool get isEmpty => score == null && staff.isEmpty && characters.isEmpty;
 }
 
 /// 制作人员条目：key=职务（导演/系列构成/动画制作…），value=人名/公司
@@ -32,9 +31,5 @@ class BangumiCharacter {
   /// 配音演员（优先中文译名）
   final String? cv;
 
-  const BangumiCharacter({
-    required this.name,
-    this.imageUrl,
-    this.cv,
-  });
+  const BangumiCharacter({required this.name, this.imageUrl, this.cv});
 }

@@ -21,5 +21,5 @@ class FavoritesNotifier extends StateNotifier<List<VideoModel>> {
 
 final favoritesProvider =
     StateNotifierProvider<FavoritesNotifier, List<VideoModel>>((ref) {
-  return FavoritesNotifier();
-});
+      return FavoritesNotifier();
+    });

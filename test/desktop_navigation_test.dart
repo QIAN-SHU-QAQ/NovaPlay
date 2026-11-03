@@ -30,7 +30,7 @@ void main() {
       expect(find.text('暂无观看记录'), findsOneWidget);
       await tester.tap(find.text('下载'));
       await tester.pumpAndSettle();
-      expect(find.text('下载功能还在开发'), findsOneWidget);
+      expect(find.text('还没有下载任务'), findsOneWidget);
       await tester.tap(find.text('设置'));
       await tester.pumpAndSettle();
       expect(find.text('主题'), findsWidgets);

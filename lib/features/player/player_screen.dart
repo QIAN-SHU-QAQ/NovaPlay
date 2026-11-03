@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,18 +10,24 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
 
 import '../../core/config/theme.dart';
+import '../../core/window/player_window_bridge.dart';
+import '../../models/danmaku_model.dart';
 import '../../models/history_item.dart';
 import '../../models/video_model.dart';
+import '../../providers/danmaku_provider.dart';
 import '../../providers/history_provider.dart';
+import '../../providers/settings_provider.dart';
+import '../../services/danmaku/dandanplay_client.dart';
 import 'playback_session.dart';
 import 'fullscreen_session.dart';
+import 'widgets/danmaku_overlay.dart';
 
 final playerFactoryProvider = Provider<Player Function()>(
   (ref) =>
       () => Player(
         configuration: const PlayerConfiguration(
           bufferSize: 64 * 1024 * 1024,
-          protocolWhitelist: ['https', 'http', 'tcp', 'tls'],
+          protocolWhitelist: ['file', 'https', 'http', 'tcp', 'tls'],
         ),
       ),
 );
@@ -81,12 +88,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   // dispose 中不能再用 ref，提前捕获 notifier
   late final HistoryNotifier _historyNotifier;
+  late final PlayerSettingsNotifier _settingsNotifier;
+  StreamSubscription<bool>? _completedSub;
+
+  // 弹幕（dandanplay）
+  List<DanmakuComment> _danmakuComments = const [];
+  bool _danmakuLoading = false;
+  String? _danmakuError;
+  String? _danmakuSource;
+  int _danmakuRequestId = 0;
 
   @override
   void initState() {
     super.initState();
     _playerTheme = AppTheme.dark;
     _historyNotifier = ref.read(historyProvider.notifier);
+    _settingsNotifier = ref.read(playerSettingsProvider.notifier);
     _player = ref.read(playerFactoryProvider)();
     _surfaceBuilder = ref.read(playerSurfaceProvider);
     if (_surfaceBuilder == null) _controller = VideoController(_player);
@@ -103,10 +120,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _session.addListener(_sessionChanged);
     _fullscreen.addListener(_sessionChanged);
     unawaited(_configureAndOpen());
+    unawaited(_loadDanmaku());
     _historyTimer = Timer.periodic(
       const Duration(seconds: 5),
       (_) => _recordHistory(),
     );
+    _completedSub = _player.stream.completed.listen(_onCompleted);
     FocusManager.instance.addEarlyKeyEventHandler(_handleKeyEvent);
   }
 
@@ -115,6 +134,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     FocusManager.instance.removeEarlyKeyEventHandler(_handleKeyEvent);
     _hideControlsTimer?.cancel();
     _historyTimer?.cancel();
+    _completedSub?.cancel();
     _recordHistory();
     _session.removeListener(_sessionChanged);
     _fullscreen.removeListener(_sessionChanged);
@@ -125,6 +145,77 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   void _sessionChanged() {
     if (mounted) setState(() {});
+  }
+
+  String get _currentEpisodeTitle {
+    final episodes = widget.episodes;
+    if (episodes == null || episodes.isEmpty) return widget.title;
+    final index = _currentIndex.clamp(0, episodes.length - 1);
+    return episodes[index]['title'] ?? '第 ${index + 1} 集';
+  }
+
+  /// 拉取当前集的弹幕（弹弹play）。切集会重新调用。
+  Future<void> _loadDanmaku() async {
+    final settings = ref.read(danmakuSettingsProvider);
+    final requestId = ++_danmakuRequestId;
+    if (!settings.hasCredentials) {
+      if (!mounted) return;
+      setState(() {
+        _danmakuComments = const [];
+        _danmakuLoading = false;
+        _danmakuError = null;
+        _danmakuSource = null;
+      });
+      return;
+    }
+
+    final animeTitle = (widget.videoTitle ?? widget.title).trim();
+    setState(() {
+      _danmakuComments = const [];
+      _danmakuLoading = true;
+      _danmakuError = null;
+      _danmakuSource = null;
+    });
+
+    try {
+      final client = DandanplayClient(
+        appId: settings.appId,
+        appSecret: settings.appSecret,
+      );
+      final result = await client.loadForEpisode(
+        animeTitle: animeTitle,
+        episodeTitle: _currentEpisodeTitle,
+        episodeIndex: _currentIndex,
+      );
+      if (!mounted || requestId != _danmakuRequestId) return;
+      setState(() {
+        _danmakuComments = result?.comments ?? const [];
+        _danmakuSource =
+            result == null
+                ? null
+                : '${result.animeTitle} ${result.episodeTitle}';
+        _danmakuLoading = false;
+      });
+    } catch (e) {
+      if (!mounted || requestId != _danmakuRequestId) return;
+      setState(() {
+        _danmakuLoading = false;
+        _danmakuError = '$e';
+      });
+    }
+  }
+
+  Future<void> _toggleDanmaku() async {
+    final settings = ref.read(danmakuSettingsProvider);
+    await ref
+        .read(danmakuSettingsProvider.notifier)
+        .setEnabled(!settings.enabled);
+    if (!settings.enabled &&
+        settings.hasCredentials &&
+        _danmakuComments.isEmpty &&
+        !_danmakuLoading) {
+      unawaited(_loadDanmaku());
+    }
   }
 
   Future<void> _configureMpvProperties() async {
@@ -150,7 +241,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   Future<void> _configureAndOpen() async {
     await _configureMpvProperties();
+    // 应用设置中的默认倍速（PlaybackSession 在打开时会保留当前 rate）。
+    try {
+      await _player.setRate(ref.read(playerSettingsProvider).playbackSpeed);
+    } catch (e) {
+      debugPrint('应用默认倍速失败: $e');
+    }
     if (mounted) await _session.open();
+  }
+
+  /// 一集播放结束：按设置决定是否自动切到下一集。
+  void _onCompleted(bool completed) {
+    if (!completed || !mounted) return;
+    if (!ref.read(playerSettingsProvider).autoPlayNext) return;
+    final episodes = widget.episodes;
+    if (episodes == null) return;
+    final next = _currentIndex + 1;
+    if (next >= episodes.length) return;
+    _playEpisode(next);
   }
 
   /// 把 UI 传入的剧集列表转成可持久化的快照（只转换一次）
@@ -211,7 +319,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // 切集前先落盘当前进度
     _recordHistory();
 
+    // 独立播放窗口：标题跟随当前集更新。
+    if (PlayerWindowBridge.isPlayerWindow) {
+      final episodeTitle =
+          widget.episodes![index]['title'] ?? '第 ${index + 1} 集';
+      PlayerWindowBridge.setTitle(
+        '${widget.videoTitle ?? widget.title} - $episodeTitle',
+      );
+    }
+
     unawaited(_session.switchEpisode(index));
+    unawaited(_loadDanmaku());
   }
 
   // ---------- 播放控制 ----------
@@ -294,6 +412,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   void _exitScreen() {
+    // 独立播放窗口：关闭当前子窗口即可，主界面不受影响。
+    if (PlayerWindowBridge.isPlayerWindow) {
+      PlayerWindowBridge.close();
+      return;
+    }
     if (Navigator.of(context).canPop()) {
       Navigator.of(context).pop();
     } else {
@@ -398,6 +521,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   Widget _buildVideoArea() {
     final colorScheme = _playerTheme.colorScheme;
+    final danmaku = ref.watch(danmakuSettingsProvider);
     return Container(
       color: Colors.black,
       child:
@@ -425,6 +549,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                             controller: _controller!,
                             controls: NoVideoControls,
                           ),
+                      if (danmaku.enabled && _danmakuComments.isNotEmpty)
+                        Positioned.fill(
+                          child: DanmakuOverlay(
+                            comments: _danmakuComments,
+                            option: DanmakuOption(
+                              fontSize: danmaku.fontSize,
+                              opacity: danmaku.opacity,
+                              area: danmaku.area,
+                            ),
+                            positionStream: _player.stream.position,
+                            playingStream: _player.stream.playing,
+                          ),
+                        ),
                       if (_session.buffering)
                         const Center(child: CircularProgressIndicator()),
                     ],
@@ -468,9 +605,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     );
   }
 
-  /// 底部控制栏：进度+缓冲 / 播放 / 上下集 / 弹幕占位 / 倍速 / 音量 / 全屏
+  /// 底部控制栏：进度+缓冲 / 播放 / 上下集 / 弹幕开关 / 倍速 / 音量 / 全屏
   Widget _buildControlBar({bool overlay = false}) {
     final colorScheme = _playerTheme.colorScheme;
+    final danmaku = ref.watch(danmakuSettingsProvider);
     final hasEpisodes = widget.episodes != null && widget.episodes!.isNotEmpty;
 
     return Container(
@@ -530,14 +668,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                 ),
               ],
 
-              // 弹幕尚未接入，保留入口并明确禁用。
+              // 弹幕开关
               IconButton(
-                tooltip: '弹幕尚未开放',
+                tooltip: danmaku.enabled ? '关闭弹幕' : '开启弹幕',
                 icon: Icon(
-                  Icons.subtitles_outlined,
-                  color: Colors.white.withValues(alpha: 0.55),
+                  danmaku.enabled
+                      ? Icons.subtitles_rounded
+                      : Icons.subtitles_off_rounded,
+                  color:
+                      danmaku.enabled
+                          ? Colors.white
+                          : Colors.white.withValues(alpha: 0.55),
                 ),
-                onPressed: null,
+                onPressed: _toggleDanmaku,
               ),
 
               const Spacer(),
@@ -623,7 +766,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       tooltip: '倍速',
       initialValue: current,
       color: _playerTheme.colorScheme.surfaceContainerHigh,
-      onSelected: (rate) => _player.setRate(rate),
+      onSelected: (rate) {
+        _player.setRate(rate);
+        _settingsNotifier.setPlaybackSpeed(rate);
+      },
       itemBuilder:
           (context) => [
             for (final rate in rates)
@@ -749,6 +895,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Widget _buildRightPanel() {
     final colors = _playerTheme.colorScheme;
     final episodes = widget.episodes ?? const [];
+    final danmaku = ref.watch(danmakuSettingsProvider);
     return Container(
       width: 280,
       color: colors.surfaceContainerLow,
@@ -859,17 +1006,34 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             child: Row(
               children: [
                 Icon(
-                  Icons.subtitles_outlined,
+                  _danmakuError != null
+                      ? Icons.error_outline
+                      : Icons.subtitles_outlined,
                   size: 16,
                   color: colors.onSurfaceVariant,
                 ),
                 const SizedBox(width: 8),
-                Text('弹幕尚未开放', style: _playerTheme.textTheme.bodySmall),
+                Expanded(
+                  child: Text(
+                    _danmakuStatusText(danmaku),
+                    style: _playerTheme.textTheme.bodySmall,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ],
             ),
           ),
         ],
       ),
     );
+  }
+
+  String _danmakuStatusText(DanmakuSettingsState danmaku) {
+    if (!danmaku.hasCredentials) return '未配置弹弹play账号（设置 → 弹幕 → 账号）';
+    if (_danmakuLoading) return '弹幕加载中…';
+    if (_danmakuError != null) return '弹幕加载失败：$_danmakuError';
+    if (_danmakuComments.isEmpty) return '没有匹配到本集弹幕';
+    return '${_danmakuComments.length} 条弹幕 · ${_danmakuSource ?? ''}';
   }
 }
