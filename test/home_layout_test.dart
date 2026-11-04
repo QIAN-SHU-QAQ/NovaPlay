@@ -39,6 +39,21 @@ class LibraryScraper extends FakeScraper {
     String category, {
     int page = 1,
   }) async => videos;
+
+  /// R4：续播会先刷新详情，这里返回与历史快照对应的新剧集地址。
+  @override
+  Future<VideoModel> getDetail(String url) async => VideoModel(
+    id: url,
+    title: '昨日观看',
+    episodes: [
+      EpisodeModel(
+        id: 'ep',
+        title: '第 1 集',
+        url: 'https://fake.local/ep',
+        playUrl: 'https://fake.local/ep-new',
+      ),
+    ],
+  );
 }
 
 class SeededHistory extends HistoryNotifier {

@@ -6,11 +6,19 @@ class BangumiInfo {
   final List<BangumiStaffEntry> staff;
   final List<BangumiCharacter> characters;
 
+  /// 匹配到的 Bangumi 条目 ID（手动纠正时用于确认/复用）。
+  final int? subjectId;
+
+  /// 匹配到的条目名（用于界面提示来源，可能是中文名）。
+  final String? matchedTitle;
+
   const BangumiInfo({
     this.score,
     this.scoreCount,
     this.staff = const [],
     this.characters = const [],
+    this.subjectId,
+    this.matchedTitle,
   });
 
   bool get isEmpty => score == null && staff.isEmpty && characters.isEmpty;

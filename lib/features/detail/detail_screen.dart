@@ -13,6 +13,9 @@ import '../../providers/favorites_provider.dart';
 import '../../providers/history_provider.dart';
 import '../../providers/scraper_provider.dart';
 import '../../providers/video_provider.dart';
+import '../../services/bangumi_api.dart';
+import '../../services/database_service.dart';
+import 'widgets/bangumi_match_dialog.dart';
 
 class DetailScreen extends ConsumerStatefulWidget {
   final String id;
@@ -100,7 +103,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                 showPoster: constraints.maxWidth < 600,
               ),
             ),
-            if (wide && showDataColumn) _buildDataColumn(bangumi),
+            if (wide && showDataColumn) _buildDataColumn(bangumi, video.title),
           ],
         );
       },
@@ -385,7 +388,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
 
   // ---------- 数据列 ----------
 
-  Widget _buildDataColumn(BangumiInfo bangumi) {
+  Widget _buildDataColumn(BangumiInfo bangumi, String title) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return SizedBox(
@@ -395,6 +398,14 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => _showBangumiMatchDialog(title),
+                icon: const Icon(Icons.tune, size: 16),
+                label: const Text('资料不准确？手动匹配'),
+              ),
+            ),
             // 评分卡
             if (bangumi.score != null) ...[
               Card(
@@ -514,6 +525,33 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
         .where((g) => g.isNotEmpty)
         .take(6)
         .toList();
+  }
+
+  /// R7：手动选择 Bangumi 条目并持久化，避免自动匹配到错误作品/季数。
+  Future<void> _showBangumiMatchDialog(String title) async {
+    final api = ref.read(bangumiApiProvider);
+    final existing = DatabaseService().getBangumiMapping(title);
+    final selected = await showDialog<Object?>(
+      context: context,
+      builder:
+          (_) => BangumiMatchDialog(
+            future: api.searchSubjects(title),
+            title: title,
+            hasExistingMapping: existing != null,
+            existingLabel: existing?['name']?.toString(),
+          ),
+    );
+    if (selected == null || !mounted) return;
+    if (selected is String && selected == BangumiMatchDialog.clearValue) {
+      await DatabaseService().removeBangumiMapping(title);
+    } else if (selected is BangumiSubjectCandidate) {
+      await DatabaseService().setBangumiMapping(title, {
+        'subjectId': selected.subjectId,
+        'name': selected.displayTitle,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+    }
+    ref.invalidate(bangumiInfoProvider(title));
   }
 
   void _playEpisode(VideoModel video, int index) async {

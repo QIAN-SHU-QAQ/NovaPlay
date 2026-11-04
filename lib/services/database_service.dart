@@ -22,6 +22,8 @@ class DatabaseService {
   static const String _favoritesKey = 'favorites_v1';
   static const String _historyKey = 'history_v1';
   static const String _searchHistoryKey = 'search_history';
+  static const String _danmakuMappingKey = 'danmaku_episode_map_v1';
+  static const String _bangumiMappingKey = 'bangumi_subject_map_v1';
   static const String _sourcesKey = 'sources_v1';
   static const String _activeSourceKey = 'active_source_v1';
 
@@ -145,6 +147,19 @@ class DatabaseService {
       case 'search.clear':
         await _enqueueWrite(_clearSearchHistoryLocal);
         return _searchHistoryKey;
+      case 'danmaku.map.set':
+        final key = op['key'];
+        final value = op['value'];
+        if (key is! String || value is! Map) return null;
+        await _enqueueWrite(
+          () => _setDanmakuMappingLocal(key, value.cast<String, dynamic>()),
+        );
+        return _danmakuMappingKey;
+      case 'danmaku.map.remove':
+        final key = op['key'];
+        if (key is! String) return null;
+        await _enqueueWrite(() => _removeDanmakuMappingLocal(key));
+        return _danmakuMappingKey;
       case 'set':
         final key = op['key'];
         if (key is! String) return null;
@@ -518,6 +533,120 @@ class DatabaseService {
 
   Future<void> _clearHistoryLocal() async {
     await _store?.remove(_historyKey);
+  }
+
+  // 弹幕手动匹配映射：videoId:episodeIndex → 弹弹play 剧集（重启后仍生效）
+  static String danmakuMappingEntryKey(String videoId, int episodeIndex) =>
+      '$videoId:$episodeIndex';
+
+  Map<String, dynamic>? getDanmakuMapping(String entryKey) {
+    final raw = _store?.getString(_danmakuMappingKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      final value = decoded[entryKey];
+      return value is Map ? value.cast<String, dynamic>() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> setDanmakuMapping(
+    String entryKey,
+    Map<String, dynamic> value,
+  ) async {
+    if (_bridge != null) {
+      await _enqueueWrite(
+        () => _dispatchOp({
+          'op': 'danmaku.map.set',
+          'key': entryKey,
+          'value': value,
+        }),
+      );
+      return;
+    }
+    await _enqueueWrite(() => _setDanmakuMappingLocal(entryKey, value));
+  }
+
+  Future<void> removeDanmakuMapping(String entryKey) async {
+    if (_bridge != null) {
+      await _enqueueWrite(
+        () => _dispatchOp({'op': 'danmaku.map.remove', 'key': entryKey}),
+      );
+      return;
+    }
+    await _enqueueWrite(() => _removeDanmakuMappingLocal(entryKey));
+  }
+
+  Map<String, dynamic> _loadDanmakuMappings() {
+    final raw = _store?.getString(_danmakuMappingKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) return decoded.cast<String, dynamic>();
+    } catch (_) {}
+    return {};
+  }
+
+  Future<void> _setDanmakuMappingLocal(
+    String entryKey,
+    Map<String, dynamic> value,
+  ) async {
+    final mappings = _loadDanmakuMappings();
+    mappings[entryKey] = value;
+    await _store?.setString(_danmakuMappingKey, jsonEncode(mappings));
+  }
+
+  Future<void> _removeDanmakuMappingLocal(String entryKey) async {
+    final mappings = _loadDanmakuMappings();
+    if (!mappings.containsKey(entryKey)) return;
+    mappings.remove(entryKey);
+    await _store?.setString(_danmakuMappingKey, jsonEncode(mappings));
+  }
+
+  // Bangumi 手动纠正映射：作品标题 → subjectId（详情页使用，本地持久化）
+  Map<String, dynamic>? getBangumiMapping(String titleKey) {
+    final raw = _store?.getString(_bangumiMappingKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      final value = decoded[titleKey];
+      return value is Map ? value.cast<String, dynamic>() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> setBangumiMapping(
+    String titleKey,
+    Map<String, dynamic> value,
+  ) async {
+    await _enqueueWrite(() async {
+      final mappings = _loadBangumiMappings();
+      mappings[titleKey] = value;
+      await _store?.setString(_bangumiMappingKey, jsonEncode(mappings));
+    });
+  }
+
+  Future<void> removeBangumiMapping(String titleKey) async {
+    await _enqueueWrite(() async {
+      final mappings = _loadBangumiMappings();
+      if (!mappings.containsKey(titleKey)) return;
+      mappings.remove(titleKey);
+      await _store?.setString(_bangumiMappingKey, jsonEncode(mappings));
+    });
+  }
+
+  Map<String, dynamic> _loadBangumiMappings() {
+    final raw = _store?.getString(_bangumiMappingKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) return decoded.cast<String, dynamic>();
+    } catch (_) {}
+    return {};
   }
 
   // Settings

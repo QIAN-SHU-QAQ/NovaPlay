@@ -8,6 +8,7 @@ import '../../models/history_item.dart';
 import '../../models/video_model.dart';
 import '../../providers/home_provider.dart';
 import '../../providers/history_provider.dart';
+import '../../providers/scraper_provider.dart';
 import '../../providers/video_provider.dart';
 import 'widgets/video_card.dart';
 import 'widgets/category_tabs.dart';
@@ -190,7 +191,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               itemBuilder:
                   (context, index) => _ContinueCard(
                     item: history[index],
-                    onTap: () => launchHistoryResume(context, history[index]),
+                    onTap:
+                        () => launchHistoryResume(
+                          context,
+                          history[index],
+                          fetchDetail:
+                              () => ref
+                                  .read(currentScraperProvider)
+                                  .getDetail(history[index].videoId),
+                        ),
                   ),
             ),
           ),

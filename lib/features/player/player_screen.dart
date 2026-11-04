@@ -18,8 +18,10 @@ import '../../providers/danmaku_provider.dart';
 import '../../providers/history_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../services/danmaku/dandanplay_client.dart';
+import '../../services/database_service.dart';
 import 'playback_session.dart';
 import 'fullscreen_session.dart';
+import 'widgets/danmaku_match_dialog.dart';
 import 'widgets/danmaku_overlay.dart';
 
 final playerFactoryProvider = Provider<Player Function()>(
@@ -154,6 +156,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return episodes[index]['title'] ?? '第 ${index + 1} 集';
   }
 
+  /// 手动匹配的持久化键：作品 + 当前集。
+  String get _danmakuMappingKey {
+    final videoKey =
+        (widget.videoId ?? widget.videoTitle ?? widget.title).trim();
+    return DatabaseService.danmakuMappingEntryKey(videoKey, _currentIndex);
+  }
+
   /// 拉取当前集的弹幕（弹弹play）。切集会重新调用。
   Future<void> _loadDanmaku() async {
     final settings = ref.read(danmakuSettingsProvider);
@@ -182,6 +191,25 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         appId: settings.appId,
         appSecret: settings.appSecret,
       );
+
+      // 手动匹配优先：同一作品同一集使用用户选定的弹幕库剧集，重启后仍生效。
+      final manualMapping = DatabaseService().getDanmakuMapping(
+        _danmakuMappingKey,
+      );
+      final mappedEpisodeId = manualMapping?['episodeId'];
+      if (mappedEpisodeId is int) {
+        final comments = await client.fetchComments(mappedEpisodeId);
+        if (!mounted || requestId != _danmakuRequestId) return;
+        setState(() {
+          _danmakuComments = comments;
+          _danmakuSource =
+              '${manualMapping?['animeTitle'] ?? ''} '
+              '${manualMapping?['episodeTitle'] ?? ''}（手动匹配）';
+          _danmakuLoading = false;
+        });
+        return;
+      }
+
       final result = await client.loadForEpisode(
         animeTitle: animeTitle,
         episodeTitle: _currentEpisodeTitle,
@@ -216,6 +244,50 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         !_danmakuLoading) {
       unawaited(_loadDanmaku());
     }
+  }
+
+  /// 手动选择弹幕库剧集（R5）：搜索候选、保存映射并重新加载。
+  Future<void> _showDanmakuMatchDialog() async {
+    final settings = ref.read(danmakuSettingsProvider);
+    if (!settings.hasCredentials) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先在设置中填写弹弹play AppId/AppSecret')),
+      );
+      return;
+    }
+    final animeTitle = (widget.videoTitle ?? widget.title).trim();
+    final entryKey = _danmakuMappingKey;
+    final existing = DatabaseService().getDanmakuMapping(entryKey);
+    final client = DandanplayClient(
+      appId: settings.appId,
+      appSecret: settings.appSecret,
+    );
+    final selected = await showDialog<Object?>(
+      context: context,
+      builder:
+          (_) => DanmakuMatchDialog(
+            future: client.searchEpisodes(anime: animeTitle),
+            animeTitle: animeTitle,
+            hasExistingMapping: existing != null,
+            existingLabel:
+                existing == null
+                    ? null
+                    : '${existing['animeTitle'] ?? ''} '
+                        '${existing['episodeTitle'] ?? ''}',
+          ),
+    );
+    if (selected == null || !mounted) return;
+    if (selected is String && selected == DanmakuMatchDialog.clearValue) {
+      await DatabaseService().removeDanmakuMapping(entryKey);
+    } else if (selected is DanmakuEpisodeMatch) {
+      await DatabaseService().setDanmakuMapping(entryKey, {
+        'episodeId': selected.episodeId,
+        'animeTitle': selected.animeTitle,
+        'episodeTitle': selected.episodeTitle,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+    }
+    await _loadDanmaku();
   }
 
   Future<void> _configureMpvProperties() async {
@@ -681,6 +753,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                           : Colors.white.withValues(alpha: 0.55),
                 ),
                 onPressed: _toggleDanmaku,
+              ),
+
+              // 手动匹配弹幕（R5）
+              IconButton(
+                tooltip: '手动匹配弹幕',
+                icon: Icon(
+                  Icons.manage_search_rounded,
+                  color: Colors.white.withValues(alpha: 0.9),
+                ),
+                onPressed:
+                    danmaku.hasCredentials ? _showDanmakuMatchDialog : null,
               ),
 
               const Spacer(),

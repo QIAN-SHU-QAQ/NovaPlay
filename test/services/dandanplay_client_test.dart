@@ -129,6 +129,44 @@ void main() {
       final best = pickBestMatch(matches, '葬送的芙莉莲', 1);
       expect(best?.episodeId, 111);
     });
+
+    test('R5：季数解析与跨季排除', () {
+      expect(extractSeason('葬送的芙莉莲 第二季'), 2);
+      expect(extractSeason('葬送的芙莉莲 第3期'), 3);
+      expect(extractSeason('SPY×FAMILY Season 2'), 2);
+      expect(extractSeason('进击的巨人 3rd Season'), 3);
+      expect(extractSeason('86 -不存在的战区- S2'), 2);
+      expect(extractSeason('葬送的芙莉莲'), isNull);
+
+      final matches = [
+        const DanmakuEpisodeMatch(
+          episodeId: 111,
+          animeTitle: '葬送的芙莉莲',
+          episodeTitle: '第1话',
+          episodeNumber: '1',
+        ),
+        const DanmakuEpisodeMatch(
+          episodeId: 222,
+          animeTitle: '葬送的芙莉莲 第二季',
+          episodeTitle: '第1话',
+          episodeNumber: '1',
+        ),
+      ];
+      expect(pickBestMatch(matches, '葬送的芙莉莲 第二季', 1)?.episodeId, 222);
+      expect(pickBestMatch(matches, '葬送的芙莉莲', 1)?.episodeId, 111);
+    });
+
+    test('R5：无关候选返回 null，不硬选错误作品', () {
+      final matches = [
+        const DanmakuEpisodeMatch(
+          episodeId: 999,
+          animeTitle: '完全无关的动画',
+          episodeTitle: '第1话',
+          episodeNumber: '1',
+        ),
+      ];
+      expect(pickBestMatch(matches, '葬送的芙莉莲', 1), isNull);
+    });
   });
 
   group('API 客户端', () {

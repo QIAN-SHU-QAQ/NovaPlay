@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/utils/play_launcher.dart';
 import '../../models/history_item.dart';
 import '../../providers/history_provider.dart';
+import '../../providers/scraper_provider.dart';
 import '../../shared/widgets/wide_media_card.dart';
 
 class HistoryScreen extends ConsumerWidget {
@@ -76,8 +77,20 @@ class HistoryScreen extends ConsumerWidget {
       subtitle: item.episodeTitle ?? '已看 ${_formatDuration(item.position)}',
       meta: _formatTime(item.watchedAt),
       progress: item.progress > 0 ? item.progress : null,
-      onTap: () => launchHistoryResume(context, item),
-      onResume: () => launchHistoryResume(context, item),
+      onTap:
+          () => launchHistoryResume(
+            context,
+            item,
+            fetchDetail:
+                () => ref.read(currentScraperProvider).getDetail(item.videoId),
+          ),
+      onResume:
+          () => launchHistoryResume(
+            context,
+            item,
+            fetchDetail:
+                () => ref.read(currentScraperProvider).getDetail(item.videoId),
+          ),
       onRemove: () => ref.read(historyProvider.notifier).remove(item.videoId),
     );
   }

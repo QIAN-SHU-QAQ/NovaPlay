@@ -3,8 +3,35 @@ import 'package:flutter/foundation.dart';
 
 import '../models/bangumi_info.dart';
 
+/// Bangumi 搜索候选（R7：不再直接取搜索首项）。
+class BangumiSubjectCandidate {
+  const BangumiSubjectCandidate({
+    required this.subjectId,
+    required this.name,
+    this.nameCn,
+    this.date,
+    this.score = 0,
+  });
+
+  final int subjectId;
+  final String name;
+  final String? nameCn;
+  final String? date;
+  final double score;
+
+  String get displayTitle =>
+      (nameCn?.trim().isNotEmpty ?? false) ? nameCn!.trim() : name.trim();
+}
+
 /// Bangumi (api.bgm.tv) 公开接口封装：标题搜索 → 评分/制作人员/角色。
-/// bgm.tv 要求非默认 UA；任何网络/解析失败一律返回 null（静默降级）。
+///
+/// bgm.tv 要求非默认 UA；网络/解析失败一律返回 null（静默降级）。
+///
+/// R7 改进：
+/// - 搜索结果按标题（含中文名）相似度排序，选择最匹配项而不是首项；
+/// - 相似度低于阈值时返回 null，避免错误关联；
+/// - 角色接口失败时仍返回评分/制作人员（部分降级）；
+/// - 支持调用方传入已确认的 subjectId（手动纠正/缓存复用）。
 class BangumiApi {
   BangumiApi({Dio? dio})
     : _dio =
@@ -24,7 +51,10 @@ class BangumiApi {
 
   final Dio _dio;
 
-  /// 参与制作人员卡的 infobox 键白名单（其余是放送日期等元数据，不入卡）
+  /// 候选低于该相似度时视为不匹配。
+  static const double minMatchScore = 0.5;
+
+  /// 参与制作人员卡的 infobox 键白名单（其余是发售日期等元数据，不入卡）
   static const _staffKeys = {
     '原作',
     '导演',
@@ -42,44 +72,119 @@ class BangumiApi {
     '出品',
   };
 
-  Future<BangumiInfo?> fetchInfo(String title) async {
-    try {
-      final keyword = title.trim();
-      if (keyword.isEmpty) return null;
+  /// 搜索动画候选并按匹配度排序。
+  Future<List<BangumiSubjectCandidate>> searchSubjects(String title) async {
+    final keyword = title.trim();
+    if (keyword.isEmpty) return const [];
+    final search = await _dio.post(
+      '/v0/search/subjects',
+      data: {
+        'keyword': keyword,
+        'filter': {
+          'type': [2],
+        }, // 2 = 动画
+      },
+    );
+    final data = search.data;
+    final list = data is Map ? (data['data'] as List?) : null;
+    if (list == null || list.isEmpty) return const [];
 
-      final search = await _dio.post(
-        '/v0/search/subjects',
-        data: {
-          'keyword': keyword,
-          'filter': {
-            'type': [2],
-          }, // 2 = 动画
-        },
+    final candidates = <BangumiSubjectCandidate>[];
+    for (final raw in list) {
+      if (raw is! Map) continue;
+      final id = raw['id'];
+      if (id is! num) continue;
+      final name = (raw['name'] as String?)?.trim() ?? '';
+      final nameCn = (raw['name_cn'] as String?)?.trim();
+      final date = (raw['date'] as String?)?.trim();
+      candidates.add(
+        BangumiSubjectCandidate(
+          subjectId: id.toInt(),
+          name: name,
+          nameCn: nameCn,
+          date: date,
+        ),
       );
-      final list = search.data['data'] as List?;
-      if (list == null || list.isEmpty) return null;
-      final subjectId = list.first['id'] as int;
-      return await _fetchSubjectInfo(subjectId);
+    }
+
+    final queryYear = _extractYear(title);
+    final scored =
+        candidates.map((candidate) {
+            var score = _matchScore(title, candidate);
+            final candidateYear = _extractYear(candidate.date ?? '');
+            // 作品名里带年份时，年份不同的候选明显降权。
+            if (queryYear != null &&
+                candidateYear != null &&
+                queryYear != candidateYear) {
+              score -= 0.3;
+            }
+            return BangumiSubjectCandidate(
+              subjectId: candidate.subjectId,
+              name: candidate.name,
+              nameCn: candidate.nameCn,
+              date: candidate.date,
+              score: score,
+            );
+          }).toList()
+          ..sort((a, b) => b.score.compareTo(a.score));
+    return scored;
+  }
+
+  /// 拉取 Bangumi 资料；[subjectId] 非空时直接使用该条目（手动纠正/缓存）。
+  Future<BangumiInfo?> fetchInfo(String title, {int? subjectId}) async {
+    try {
+      int? resolvedId = subjectId;
+      String? matchedTitle;
+      if (resolvedId == null) {
+        final candidates = await searchSubjects(title);
+        if (candidates.isEmpty) return null;
+        final best = candidates.first;
+        if (best.score < minMatchScore) {
+          debugPrint(
+            'BangumiApi: 标题相似度不足（${best.score.toStringAsFixed(2)}），'
+            '跳过自动匹配：$title',
+          );
+          return null;
+        }
+        resolvedId = best.subjectId;
+        matchedTitle = best.displayTitle;
+      }
+      return await _fetchSubjectInfo(resolvedId, matchedTitle: matchedTitle);
     } catch (e) {
       debugPrint('BangumiApi fetchInfo failed: $e');
       return null;
     }
   }
 
-  Future<BangumiInfo?> _fetchSubjectInfo(int subjectId) async {
+  Future<BangumiInfo?> _fetchSubjectInfo(
+    int subjectId, {
+    String? matchedTitle,
+  }) async {
     try {
-      final results = await Future.wait([
-        _dio.get('/v0/subjects/$subjectId'),
-        _dio.get('/v0/subjects/$subjectId/characters'),
-      ]);
-      final subject = results[0].data as Map<String, dynamic>;
-      final charactersRaw = (results[1].data as List?) ?? const [];
+      final subjectResponse = await _dio.get('/v0/subjects/$subjectId');
+      final subject = subjectResponse.data;
+      if (subject is! Map<String, dynamic>) {
+        debugPrint('BangumiApi: subject 返回格式异常');
+        return null;
+      }
+
+      // 角色接口独立降级：失败时只保留评分/制作人员。
+      var charactersRaw = const <dynamic>[];
+      try {
+        final charactersResponse = await _dio.get(
+          '/v0/subjects/$subjectId/characters',
+        );
+        final data = charactersResponse.data;
+        if (data is List) charactersRaw = data;
+      } catch (e) {
+        debugPrint('BangumiApi: 获取角色失败，降级为部分资料: $e');
+      }
 
       // 评分
       double? score;
       int? scoreCount;
-      final rating = subject['rating'] as Map<String, dynamic>?;
-      if (rating != null) {
+      final rating = subject['rating'];
+      if (rating is Map) {
         final rawScore = rating['score'];
         if (rawScore is num) score = rawScore.toDouble();
         final rawCount = rating['total'];
@@ -90,7 +195,7 @@ class BangumiApi {
       final staff = <BangumiStaffEntry>[];
       final infobox = (subject['infobox'] as List?) ?? const [];
       for (final entry in infobox) {
-        if (entry is! Map<String, dynamic>) continue;
+        if (entry is! Map) continue;
         final key = entry['key']?.toString() ?? '';
         if (!_staffKeys.contains(key)) continue;
         final value = _flattenInfoboxValue(entry['value']);
@@ -103,14 +208,14 @@ class BangumiApi {
       // 角色 + 声优
       final characters = <BangumiCharacter>[];
       for (final raw in charactersRaw.take(12)) {
-        if (raw is! Map<String, dynamic>) continue;
+        if (raw is! Map) continue;
         final name = raw['name']?.toString();
         if (name == null || name.isEmpty) continue;
-        final images = raw['images'] as Map<String, dynamic>?;
+        final images = raw['images'];
         final actors = (raw['actors'] as List?) ?? const [];
         String? cv;
         for (final actor in actors) {
-          if (actor is Map<String, dynamic> &&
+          if (actor is Map &&
               actor['name'] != null &&
               actor['name'].toString().isNotEmpty) {
             // 优先中文配音名
@@ -125,13 +230,18 @@ class BangumiApi {
           BangumiCharacter(
             name: name,
             imageUrl:
-                images?['medium']?.toString() ?? images?['large']?.toString(),
+                images is Map
+                    ? (images['medium']?.toString() ??
+                        images['large']?.toString())
+                    : null,
             cv: cv,
           ),
         );
       }
 
       return BangumiInfo(
+        subjectId: subjectId,
+        matchedTitle: matchedTitle,
         score: score,
         scoreCount: scoreCount,
         staff: staff,
@@ -143,6 +253,88 @@ class BangumiApi {
     }
   }
 
+  double _matchScore(String query, BangumiSubjectCandidate candidate) {
+    var best = 0.0;
+    for (final name in [candidate.name, candidate.nameCn]) {
+      if (name == null || name.trim().isEmpty) continue;
+      // 基础相似度忽略季数标记，再用保留季数的相似度做区分：
+      // 「QA 样本 第二季」应优先匹配带「第二季」的条目，而不是同名第一季。
+      final base = _titleSimilarity(query, name);
+      final withSeason = _titleSimilarityKeepSeason(query, name);
+      final combined = base * 0.75 + withSeason * 0.25;
+      if (combined > best) best = combined;
+    }
+    return best;
+  }
+
+  static String _normalizeTitle(String input) {
+    var text = input.toLowerCase();
+    text = text.replaceAllMapped(
+      RegExp(r'[\uFF10-\uFF19\uFF21-\uFF3A\uFF41-\uFF5A]'),
+      (match) => String.fromCharCode(match.group(0)!.codeUnitAt(0) - 0xFEE0),
+    );
+    text = text.replaceAll(
+      RegExp(r'[\s\[\]\(\)（）【】「」『』《》〈〉,，.。!！?？:：;；~～\-—_/\\|·・×]'),
+      '',
+    );
+    text = text.replaceAll(RegExp(r'第[0-9一二三四五六七八九十]+[季期部]'), '');
+    text = text.replaceAll(RegExp(r'season[0-9]+'), '');
+    return text;
+  }
+
+  static String _normalizeTitleKeepSeason(String input) {
+    var text = input.toLowerCase();
+    text = text.replaceAllMapped(
+      RegExp(r'[\uFF10-\uFF19\uFF21-\uFF3A\uFF41-\uFF5A]'),
+      (match) => String.fromCharCode(match.group(0)!.codeUnitAt(0) - 0xFEE0),
+    );
+    text = text.replaceAll(
+      RegExp(r'[\s\[\]\(\)（）【】「」『』《》〈〉,，.。!！?？:：;；~～\-—_/\\|·・×]'),
+      '',
+    );
+    return text;
+  }
+
+  static double _titleSimilarityKeepSeason(String a, String b) {
+    final left = _normalizeTitleKeepSeason(a);
+    final right = _normalizeTitleKeepSeason(b);
+    if (left.isEmpty || right.isEmpty) return 0;
+    if (left == right) return 1;
+    if (left.contains(right) || right.contains(left)) return 0.85;
+    final leftGrams = _bigrams(left);
+    final rightGrams = _bigrams(right);
+    if (leftGrams.isEmpty || rightGrams.isEmpty) return 0;
+    final intersection = leftGrams.intersection(rightGrams).length;
+    final union = leftGrams.length + rightGrams.length - intersection;
+    return union == 0 ? 0 : intersection / union;
+  }
+
+  static double _titleSimilarity(String a, String b) {
+    final left = _normalizeTitle(a);
+    final right = _normalizeTitle(b);
+    if (left.isEmpty || right.isEmpty) return 0;
+    if (left == right) return 1;
+    if (left.contains(right) || right.contains(left)) return 0.85;
+    final leftGrams = _bigrams(left);
+    final rightGrams = _bigrams(right);
+    if (leftGrams.isEmpty || rightGrams.isEmpty) return 0;
+    final intersection = leftGrams.intersection(rightGrams).length;
+    final union = leftGrams.length + rightGrams.length - intersection;
+    return union == 0 ? 0 : intersection / union;
+  }
+
+  static Set<String> _bigrams(String value) {
+    if (value.length < 2) return {value};
+    return {
+      for (var i = 0; i < value.length - 1; i++) value.substring(i, i + 2),
+    };
+  }
+
+  static int? _extractYear(String text) {
+    final match = RegExp(r'(19|20)\d{2}').firstMatch(text);
+    return match == null ? null : int.tryParse(match.group(0)!);
+  }
+
   /// infobox 的 value 可能是字符串、字符串数组或 [{v: '...'}] 数组
   String? _flattenInfoboxValue(dynamic value) {
     if (value is String) return value;
@@ -151,7 +343,7 @@ class BangumiApi {
       for (final item in value) {
         if (item is String) {
           parts.add(item);
-        } else if (item is Map<String, dynamic> && item['v'] != null) {
+        } else if (item is Map && item['v'] != null) {
           parts.add(item['v'].toString());
         }
       }
