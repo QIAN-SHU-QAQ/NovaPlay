@@ -1,17 +1,39 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nova_play/models/history_item.dart';
+import 'package:nova_play/models/video_model.dart';
 import 'package:nova_play/services/database_service.dart';
 import 'package:nova_play/services/prefs_bridge.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+HistoryItem _history(String videoId, String title, int seconds) {
+  return HistoryItem(
+    videoId: videoId,
+    title: title,
+    episodeIndex: 0,
+    position: Duration(seconds: seconds),
+    watchedAt: DateTime(2026, 11, 4),
+  );
+}
+
+Future<int> _deadPort() async {
+  final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  final port = socket.port;
+  await socket.close();
+  return port;
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('配置桥：写入/删除转发到主进程并广播变更', () async {
+  test('配置桥：标量写/删转发并广播变更', () async {
     final values = <String, Object?>{};
     final server = await PrefsBridgeServer.start(
       onSet: (key, value) async => values[key] = value,
       onRemove: (key) async => values.remove(key),
+      onOps: (ops) async => const <String>[],
     );
     expect(server, isNotNull);
     final client = PrefsBridgeClient(server!.port);
@@ -36,10 +58,11 @@ void main() {
     expect(changes.last, contains('history_v1'));
   });
 
-  test('配置桥：主进程关闭后客户端写入返回 false（播放器回退本地写）', () async {
+  test('配置桥：主进程关闭后客户端写入返回 false（播放器转离线日志）', () async {
     final server = await PrefsBridgeServer.start(
       onSet: (key, value) async {},
       onRemove: (key) async {},
+      onOps: (ops) async => const <String>[],
     );
     final port = server!.port;
     await server.dispose();
@@ -49,7 +72,7 @@ void main() {
     expect(await client.set({'a': 1}), isFalse);
   });
 
-  test('播放进程写入经主进程持久化，主进程随后写设置不丢历史', () async {
+  test('语义操作：主进程在最新状态上合并，两个播放器先后写入都保留', () async {
     SharedPreferences.setMockInitialValues({});
     final db = DatabaseService()..resetForTest();
     await db.init();
@@ -58,32 +81,88 @@ void main() {
     final server = await PrefsBridgeServer.start(
       onSet: (key, value) => db.applyRemoteSet(key, value),
       onRemove: (key) => db.applyRemoteSet(key, null),
+      onOps: (ops) => db.applyRemoteOps(ops),
     );
     addTearDown(() async {
       db.resetForTest();
       await server?.dispose();
     });
+    final client = PrefsBridgeClient(server!.port);
 
-    // 模拟播放器进程：DatabaseService 的写操作转发给主进程。
-    db.attachBridge(PrefsBridgeClient(server!.port));
-    await db.setAutoPlay(false);
-    await db.saveHistory(
-      HistoryItem(
-        videoId: '1',
-        title: 'QA Sample 01',
-        episodeIndex: 0,
-        position: const Duration(seconds: 35),
-        watchedAt: DateTime(2026, 11, 3),
-      ),
+    final changeFuture = server.changes.first;
+    expect(
+      await client.ops([
+        {
+          'op': 'history.upsert',
+          'item': _history('1', 'QA Sample 01', 20).toJson(),
+        },
+      ]),
+      isTrue,
     );
+    expect(
+      await client.ops([
+        {
+          'op': 'history.upsert',
+          'item': _history('2', 'QA Sample 02', 30).toJson(),
+        },
+      ]),
+      isTrue,
+    );
+    expect(db.getHistory().map((h) => h.videoId), containsAll(['1', '2']));
+    expect(await changeFuture, contains('history_v1'));
 
-    expect(db.getAutoPlay(), isFalse);
-    expect(db.getHistory().single.videoId, '1');
+    await client.ops([
+      {'op': 'history.remove', 'videoId': '1'},
+    ]);
+    expect(db.getHistory().map((h) => h.videoId), ['2']);
 
-    // 模拟主进程写入设置：不能覆盖已经由播放器写入的历史。
-    db.detachBridge();
-    await db.setAutoPlay(true);
-    expect(db.getAutoPlay(), isTrue);
-    expect(db.getHistory().single.videoId, '1');
+    await client.ops([
+      {
+        'op': 'favorites.add',
+        'item': VideoModel(id: '2', title: 'QA Sample 02').toJson(),
+      },
+    ]);
+    expect(db.getFavorites().single.id, '2');
+  });
+
+  test('播放器离线写入：不覆盖本地配置，操作进日志并在下次启动回放', () async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    final tempDir = Directory.systemTemp.createTempSync('nova_journal_');
+    addTearDown(() {
+      db.resetForTest();
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    // 主窗口此前写入的收藏必须保留。
+    await db.addFavorite(VideoModel(id: '2', title: 'QA Sample 02'));
+    expect(db.getFavorites().single.id, '2');
+
+    // 模拟主窗口已关闭：配置桥连不上。
+    db.attachBridge(PrefsBridgeClient(await _deadPort()), journalDir: tempDir);
+    await db.saveHistory(_history('3', 'QA Sample 03', 40));
+
+    // 播放器不能用启动时的旧缓存写整份配置：本地历史仍为空，收藏未丢。
+    expect(db.getHistory(), isEmpty);
+    expect(db.getFavorites().single.id, '2');
+    expect(db.pendingOps, isNotEmpty);
+
+    final journal = File(
+      '${tempDir.path}${Platform.pathSeparator}pending_ops.$pid.json',
+    );
+    expect(journal.existsSync(), isTrue);
+    expect(journal.readAsStringSync(), contains('history.upsert'));
+    expect(jsonDecode(journal.readAsStringSync()), isA<List<dynamic>>());
+
+    // 模拟下次启动主进程：回放离线日志。
+    db.resetForTest();
+    await db.init();
+    db.setJournalDirectory(tempDir);
+    await db.flushPendingJournals();
+
+    expect(db.getHistory().single.videoId, '3');
+    expect(db.getFavorites().single.id, '2');
+    expect(journal.existsSync(), isFalse);
   });
 }
