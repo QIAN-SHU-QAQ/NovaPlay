@@ -80,7 +80,9 @@ module.exports = async ({ github, context, core }) => {
         validated = requiredJobs.every(name =>
           jobs.some(job => job.name === name && job.conclusion === 'success'));
         if (run.status === 'completed' && run.conclusion !== 'success') validated = false;
-        const state = validated ? 'success' : run.status === 'completed' ? 'failure' : 'pending';
+        const failedJob = requiredJobs.some(name => jobs.some(job =>
+          job.name === name && job.conclusion && job.conclusion !== 'success'));
+        const state = validated ? 'success' : failedJob || run.status === 'completed' ? 'failure' : 'pending';
         await status(head, 'CI validation', state,
           validated ? 'Exact PR head/base: policy tests, Flutter tests and Windows build passed'
             : state === 'failure' ? 'Validation failed or required jobs missing; inspect run'
