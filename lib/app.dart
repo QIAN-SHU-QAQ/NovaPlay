@@ -9,6 +9,7 @@ import 'providers/favorites_provider.dart';
 import 'providers/history_provider.dart';
 import 'providers/theme_provider.dart';
 import 'services/database_service.dart';
+import 'services/prefs_bridge.dart';
 
 class NovaPlayApp extends ConsumerStatefulWidget {
   const NovaPlayApp({super.key});
@@ -19,14 +20,23 @@ class NovaPlayApp extends ConsumerStatefulWidget {
 
 class _NovaPlayAppState extends ConsumerState<NovaPlayApp>
     with WidgetsBindingObserver {
+  StreamSubscription<Set<String>>? _bridgeSubscription;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // 播放器进程通过配置桥写入历史/收藏后，主界面即时刷新。
+    _bridgeSubscription = PrefsBridgeServer.instance?.changes.listen((keys) {
+      if (!mounted) return;
+      if (keys.contains('history_v1')) ref.invalidate(historyProvider);
+      if (keys.contains('favorites_v1')) ref.invalidate(favoritesProvider);
+    });
   }
 
   @override
   void dispose() {
+    _bridgeSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }

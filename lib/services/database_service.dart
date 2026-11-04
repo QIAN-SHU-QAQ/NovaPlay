@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/history_item.dart';
 import '../models/video_model.dart';
+import 'prefs_bridge.dart';
 import 'scraper/source_config.dart';
 
 class DatabaseService {
@@ -25,11 +26,52 @@ class DatabaseService {
   // 可空：未 init 时所有读取返回默认值，避免测试或早于初始化的访问崩溃
   SharedPreferences? _prefs;
 
+  /// 播放器进程使用：把写操作转发给主进程，避免两个进程互相覆盖配置。
+  PrefsBridgeClient? _bridge;
+
   Future<void> init() async {
     _prefs ??= await SharedPreferences.getInstance();
   }
 
-  /// 从磁盘重新加载：独立播放进程写入的历史/收藏，主进程需要主动刷新。
+  /// 播放器进程启动时接入主进程的配置桥。
+  void attachBridge(PrefsBridgeClient client) {
+    _bridge = client;
+  }
+
+  void detachBridge() {
+    _bridge?.dispose();
+    _bridge = null;
+  }
+
+  @visibleForTesting
+  bool get hasBridge => _bridge != null;
+
+  /// 主进程应用远程写入（由 [PrefsBridgeServer] 回调）。
+  Future<void> applyRemoteSet(String key, Object? value) async {
+    final prefs = _store;
+    if (prefs == null) return;
+    if (value == null) {
+      await prefs.remove(key);
+    } else if (value is bool) {
+      await prefs.setBool(key, value);
+    } else if (value is int) {
+      await prefs.setInt(key, value);
+    } else if (value is double) {
+      await prefs.setDouble(key, value);
+    } else if (value is String) {
+      await prefs.setString(key, value);
+    } else if (value is List) {
+      await prefs.setStringList(key, value.map((e) => '$e').toList());
+    } else {
+      await prefs.setString(key, jsonEncode(value));
+    }
+  }
+
+  /// 从磁盘重新加载：播放进程写入的历史/收藏，主进程需要主动刷新。
+  ///
+  /// 注意：Windows 的 legacy shared_preferences 实现中 `reload()` 仍会读
+  /// 进程内缓存，不能保证拿到子进程写入。跨进程一致性由
+  /// [PrefsBridgeServer] 负责，此方法只作为兜底。
   Future<void> reloadFromDisk() async {
     final prefs = _prefs;
     if (prefs == null) return;
@@ -43,6 +85,7 @@ class DatabaseService {
   /// 仅测试用：丢弃缓存的 prefs 实例，并清空写队列（避免跨测试挂起的 Future）。
   @visibleForTesting
   void resetForTest() {
+    detachBridge();
     _prefs = null;
     _writeChain = Future<void>.value();
     _writeZone = null;
@@ -68,6 +111,43 @@ class DatabaseService {
     return next;
   }
 
+  // 写入路由：播放器进程走主进程桥，主进程（或测试）直接写本地。
+  Future<void> _setBool(String key, bool value) async {
+    final bridge = _bridge;
+    if (bridge != null && await bridge.set({key: value})) return;
+    await _store?.setBool(key, value);
+  }
+
+  Future<void> _setInt(String key, int value) async {
+    final bridge = _bridge;
+    if (bridge != null && await bridge.set({key: value})) return;
+    await _store?.setInt(key, value);
+  }
+
+  Future<void> _setDouble(String key, double value) async {
+    final bridge = _bridge;
+    if (bridge != null && await bridge.set({key: value})) return;
+    await _store?.setDouble(key, value);
+  }
+
+  Future<void> _setString(String key, String value) async {
+    final bridge = _bridge;
+    if (bridge != null && await bridge.set({key: value})) return;
+    await _store?.setString(key, value);
+  }
+
+  Future<void> _setStringList(String key, List<String> value) async {
+    final bridge = _bridge;
+    if (bridge != null && await bridge.set({key: value})) return;
+    await _store?.setStringList(key, value);
+  }
+
+  Future<void> _removeKey(String key) async {
+    final bridge = _bridge;
+    if (bridge != null && await bridge.remove([key])) return;
+    await _store?.remove(key);
+  }
+
   // Search History
   List<String> getSearchHistory() {
     return _store?.getStringList(_searchHistoryKey) ?? [];
@@ -75,22 +155,19 @@ class DatabaseService {
 
   Future<void> addSearchHistory(String query) {
     return _enqueueWrite(() async {
-      final prefs = _store;
-      if (prefs == null) return;
+      if (_store == null) return;
       final history = getSearchHistory();
       history.remove(query);
       history.insert(0, query);
       if (history.length > _searchHistoryLimit) {
         history.removeLast();
       }
-      await prefs.setStringList(_searchHistoryKey, history);
+      await _setStringList(_searchHistoryKey, history);
     });
   }
 
   Future<void> clearSearchHistory() {
-    return _enqueueWrite(() async {
-      await _store?.remove(_searchHistoryKey);
-    });
+    return _enqueueWrite(() => _removeKey(_searchHistoryKey));
   }
 
   // Favorites（存 VideoModel 快照，收藏页无需回源即可展示）
@@ -104,11 +181,10 @@ class DatabaseService {
 
   Future<void> addFavorite(VideoModel video) {
     return _enqueueWrite(() async {
-      final prefs = _store;
-      if (prefs == null) return;
+      if (_store == null) return;
       final favorites = getFavorites()..removeWhere((v) => v.id == video.id);
       favorites.insert(0, video);
-      await prefs.setString(
+      await _setString(
         _favoritesKey,
         jsonEncode(favorites.map((v) => v.toJson()).toList()),
       );
@@ -117,10 +193,9 @@ class DatabaseService {
 
   Future<void> removeFavorite(String videoId) {
     return _enqueueWrite(() async {
-      final prefs = _store;
-      if (prefs == null) return;
+      if (_store == null) return;
       final favorites = getFavorites()..removeWhere((v) => v.id == videoId);
-      await prefs.setString(
+      await _setString(
         _favoritesKey,
         jsonEncode(favorites.map((v) => v.toJson()).toList()),
       );
@@ -146,15 +221,14 @@ class DatabaseService {
 
   Future<void> saveHistory(HistoryItem item) {
     return _enqueueWrite(() async {
-      final prefs = _store;
-      if (prefs == null) return;
+      if (_store == null) return;
       final history =
           getHistory()..removeWhere((h) => h.videoId == item.videoId);
       history.insert(0, item);
       if (history.length > _historyLimit) {
         history.removeLast();
       }
-      await prefs.setString(
+      await _setString(
         _historyKey,
         jsonEncode(history.map((h) => h.toJson()).toList()),
       );
@@ -163,10 +237,9 @@ class DatabaseService {
 
   Future<void> removeHistory(String videoId) {
     return _enqueueWrite(() async {
-      final prefs = _store;
-      if (prefs == null) return;
+      if (_store == null) return;
       final history = getHistory()..removeWhere((h) => h.videoId == videoId);
-      await prefs.setString(
+      await _setString(
         _historyKey,
         jsonEncode(history.map((h) => h.toJson()).toList()),
       );
@@ -174,9 +247,7 @@ class DatabaseService {
   }
 
   Future<void> clearHistory() {
-    return _enqueueWrite(() async {
-      await _store?.remove(_historyKey);
-    });
+    return _enqueueWrite(() => _removeKey(_historyKey));
   }
 
   // Settings
@@ -193,47 +264,45 @@ class DatabaseService {
   }
 
   Future<void> setThemeMode(int value) =>
-      _store?.setInt(_themeModeKey, value.clamp(0, 2)) ?? Future.value();
+      _enqueueWrite(() => _setInt(_themeModeKey, value.clamp(0, 2)));
 
   bool getAutoPlay() => _store?.getBool('auto_play') ?? true;
   Future<void> setAutoPlay(bool value) =>
-      _store?.setBool('auto_play', value) ?? Future.value();
+      _enqueueWrite(() => _setBool('auto_play', value));
 
   bool getDanmakuEnabled() => _store?.getBool('danmaku_enabled') ?? true;
   Future<void> setDanmakuEnabled(bool value) =>
-      _store?.setBool('danmaku_enabled', value) ?? Future.value();
+      _enqueueWrite(() => _setBool('danmaku_enabled', value));
 
   String getDefaultQuality() => _store?.getString('default_quality') ?? '1080P';
   Future<void> setDefaultQuality(String value) =>
-      _store?.setString('default_quality', value) ?? Future.value();
+      _enqueueWrite(() => _setString('default_quality', value));
 
   double getPlaybackSpeed() => _store?.getDouble('playback_speed') ?? 1.0;
   Future<void> setPlaybackSpeed(double value) =>
-      _store?.setDouble('playback_speed', value) ?? Future.value();
+      _enqueueWrite(() => _setDouble('playback_speed', value));
 
   // 弹幕：dandanplay 开放 API 凭据 + 显示样式
   String getDanmakuAppId() => _store?.getString('danmaku_app_id') ?? '';
   Future<void> setDanmakuAppId(String value) =>
-      _store?.setString('danmaku_app_id', value) ?? Future.value();
+      _enqueueWrite(() => _setString('danmaku_app_id', value));
 
   String getDanmakuAppSecret() => _store?.getString('danmaku_app_secret') ?? '';
   Future<void> setDanmakuAppSecret(String value) =>
-      _store?.setString('danmaku_app_secret', value) ?? Future.value();
+      _enqueueWrite(() => _setString('danmaku_app_secret', value));
 
   double getDanmakuOpacity() => _store?.getDouble('danmaku_opacity') ?? 1.0;
   Future<void> setDanmakuOpacity(double value) =>
-      _store?.setDouble('danmaku_opacity', value.clamp(0.2, 1.0)) ??
-      Future.value();
+      _enqueueWrite(() => _setDouble('danmaku_opacity', value.clamp(0.2, 1.0)));
 
   double getDanmakuFontSize() => _store?.getDouble('danmaku_font_size') ?? 16.0;
-  Future<void> setDanmakuFontSize(double value) =>
-      _store?.setDouble('danmaku_font_size', value.clamp(10.0, 32.0)) ??
-      Future.value();
+  Future<void> setDanmakuFontSize(double value) => _enqueueWrite(
+    () => _setDouble('danmaku_font_size', value.clamp(10.0, 32.0)),
+  );
 
   double getDanmakuArea() => _store?.getDouble('danmaku_area') ?? 1.0;
   Future<void> setDanmakuArea(double value) =>
-      _store?.setDouble('danmaku_area', value.clamp(0.2, 1.0)) ??
-      Future.value();
+      _enqueueWrite(() => _setDouble('danmaku_area', value.clamp(0.2, 1.0)));
 
   // Data Sources（用户可配置的 maccms 源）
   List<SourceConfig> getSources() {
@@ -253,7 +322,7 @@ class DatabaseService {
 
   Future<void> saveSources(List<SourceConfig> sources) {
     return _enqueueWrite(() async {
-      await _store?.setString(
+      await _setString(
         _sourcesKey,
         jsonEncode(sources.map((s) => s.toJson()).toList()),
       );
@@ -263,9 +332,7 @@ class DatabaseService {
   String? getActiveSourceId() => _store?.getString(_activeSourceKey);
 
   Future<void> setActiveSourceId(String id) {
-    return _enqueueWrite(() async {
-      await _store?.setString(_activeSourceKey, id);
-    });
+    return _enqueueWrite(() => _setString(_activeSourceKey, id));
   }
 
   List<VideoModel> _decodeSnapshots(String? raw) {
