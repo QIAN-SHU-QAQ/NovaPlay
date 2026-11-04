@@ -125,6 +125,64 @@ void main() {
     expect(db.getFavorites().single.id, '2');
   });
 
+  test('主窗口重启后旧播放器发现新端点并恢复实时提交', () async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    final tempDir = Directory.systemTemp.createTempSync('nova_bridge_');
+    final endpointFile = File(
+      '${tempDir.path}${Platform.pathSeparator}bridge_endpoint.json',
+    );
+    addTearDown(() {
+      db.resetForTest();
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    Future<PrefsBridgeServer?> startServer() => PrefsBridgeServer.start(
+      onSet: (key, value) => db.applyRemoteSet(key, value),
+      onRemove: (key) => db.applyRemoteSet(key, null),
+      onOps: (ops) => db.applyRemoteOps(ops),
+      endpointFile: endpointFile,
+    );
+
+    final firstServer = await startServer();
+    expect(firstServer, isNotNull);
+    final client = PrefsBridgeClient(
+      firstServer!.port,
+      endpointFile: endpointFile,
+    );
+    expect(
+      await client.ops([
+        {
+          'op': 'history.upsert',
+          'item': _history('1', 'QA Sample 01', 20).toJson(),
+        },
+      ]),
+      isTrue,
+    );
+
+    // 主窗口关闭后重启：新主进程使用新端口/新会话，端点文件被更新。
+    final firstSession = firstServer.session;
+    await firstServer.dispose();
+    final secondServer = await startServer();
+    expect(secondServer, isNotNull);
+    expect(secondServer!.session, isNot(firstSession));
+
+    // 客户端仍持有旧端口号，但应通过端点文件发现新主窗口并提交成功。
+    expect(
+      await client.ops([
+        {
+          'op': 'history.upsert',
+          'item': _history('2', 'QA Sample 02', 30).toJson(),
+        },
+      ]),
+      isTrue,
+    );
+    expect(db.getHistory().map((h) => h.videoId), containsAll(['1', '2']));
+
+    await secondServer.dispose();
+  });
+
   test('播放器离线写入：不覆盖本地配置，操作进日志并在下次启动回放', () async {
     SharedPreferences.setMockInitialValues({});
     final db = DatabaseService()..resetForTest();
