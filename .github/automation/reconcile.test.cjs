@@ -104,3 +104,11 @@ test('incomplete file list fails closed', async () => {
   assert.equal(calls.statuses.at(-1).state, 'failure');
   assert.equal(calls.approvals.length + calls.merges.length + calls.dispatches.length, 0);
 });
+
+test('workflow changes still get validation but never request unsupported token-based auto-merge', async () => {
+  const { calls, run } = harness({ files: [{ filename: '.github/workflows/release.yml', status: 'added' }], hasRun: false });
+  await run();
+  assert.equal(calls.merges.length, 0);
+  assert.equal(calls.dispatches.length, 1);
+  assert.equal(calls.failed.length, 0);
+});

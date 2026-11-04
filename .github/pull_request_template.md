@@ -15,4 +15,4 @@
 
 ## 合并规则
 
-规则见 [PR 自动检查与合并](../.github/AUTOMATION.md)。代码需要其他维护者批准当前 head；关键代码的批准 Review 还须附 `Acceptance-SHA: 完整提交SHA`。CI 通过不代表专项实机验收完成。
+规则见 [PR 自动检查与合并](https://github.com/QIAN-SHU-QAQ/NovaPlay/blob/main/.github/AUTOMATION.md)。代码需要其他维护者批准当前 head；关键代码的批准 Review 还须附 `Acceptance-SHA: 完整提交SHA`。CI 通过不代表专项实机验收完成。
