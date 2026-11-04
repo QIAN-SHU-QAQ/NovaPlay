@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -13,11 +14,17 @@ import 'package:flutter/foundation.dart';
 /// - **主窗口进程是唯一持久化写入方**；
 /// - 播放器进程把写入通过本机 127.0.0.1 TCP 交给主进程；
 /// - 标量设置走 `set`/`remove`；历史/收藏/搜索历史走**语义操作**
-///   （`history.upsert` 等），由主进程在最新状态上做合并，避免客户端用
+///   （`history.upsert` 等），由主进程在最新状态上合并，避免客户端用
 ///   启动时的旧缓存拼出整份列表覆盖新数据；
 /// - 主进程写入后广播变更，界面据此刷新；
 /// - 主进程不可用时，播放器把操作写入本地日志文件（journal），
 ///   下次主进程启动时回放，绝不直接写整份 SharedPreferences。
+///
+/// **主窗口重启**：主窗口每次启动都会监听新的随机端口，并把
+/// 「端口 + 进程 pid + 会话 token」原子写入端点文件
+/// `<应用支持目录>/bridge_endpoint.json`。播放器每次请求前重新读取该文件，
+/// 携带会话 token 连接；token 不匹配（连到旧主进程/旧端点）或连接失败时
+/// 重新读取端点重试，因此旧播放器能自动发现并接上新主窗口。
 ///
 /// 传输使用「一行 JSON 一个请求/响应」的极简协议（不依赖 HttpClient，
 /// 便于在 Flutter 测试环境里直接使用）。
@@ -27,6 +34,8 @@ class PrefsBridgeServer {
     this._onSet,
     this._onRemove,
     this._onOps,
+    this.session,
+    this._endpointFile,
   ) {
     _serverSocket.listen(_handleConnection);
   }
@@ -41,6 +50,7 @@ class PrefsBridgeServer {
     required Future<void> Function(String key) onRemove,
     required Future<Iterable<String>> Function(List<Map<String, dynamic>> ops)
     onOps,
+    File? endpointFile,
   }) async {
     final existing = _instance;
     if (existing != null) return existing;
@@ -49,8 +59,16 @@ class PrefsBridgeServer {
         InternetAddress.loopbackIPv4,
         0,
       );
-      final bridge = PrefsBridgeServer._(serverSocket, onSet, onRemove, onOps);
+      final bridge = PrefsBridgeServer._(
+        serverSocket,
+        onSet,
+        onRemove,
+        onOps,
+        _newSessionToken(),
+        endpointFile,
+      );
       _instance = bridge;
+      await bridge._writeEndpoint();
       debugPrint('跨进程配置桥已启动: 127.0.0.1:${bridge.port}');
       return bridge;
     } catch (e) {
@@ -59,11 +77,21 @@ class PrefsBridgeServer {
     }
   }
 
+  static String _newSessionToken() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
+
   final ServerSocket _serverSocket;
   final Future<void> Function(String key, Object? value) _onSet;
   final Future<void> Function(String key) _onRemove;
   final Future<Iterable<String>> Function(List<Map<String, dynamic>> ops)
   _onOps;
+
+  /// 本次主进程会话的随机 token：请求必须携带相同的值。
+  final String session;
+  final File? _endpointFile;
   final StreamController<Set<String>> _changes =
       StreamController<Set<String>>.broadcast();
 
@@ -71,6 +99,27 @@ class PrefsBridgeServer {
 
   /// 主进程应用完远程写入后广播变更的键名。
   Stream<Set<String>> get changes => _changes.stream;
+
+  Future<void> _writeEndpoint() async {
+    final file = _endpointFile;
+    if (file == null) return;
+    try {
+      await file.parent.create(recursive: true);
+      final tmp = File('${file.path}.tmp');
+      await tmp.writeAsString(
+        jsonEncode({
+          'pid': pid,
+          'port': port,
+          'session': session,
+          'startedAt': DateTime.now().toIso8601String(),
+        }),
+      );
+      if (await file.exists()) await file.delete();
+      await tmp.rename(file.path);
+    } catch (e) {
+      debugPrint('写入配置桥端点文件失败: $e');
+    }
+  }
 
   void _handleConnection(Socket socket) {
     socket
@@ -106,6 +155,13 @@ class PrefsBridgeServer {
       return {'ok': false, 'error': 'bad payload'};
     }
 
+    // 会话校验：客户端可能拿着重启前的旧端点，必须让它在主进程换代后
+    // 重新读取端点文件，而不是把数据写进错误的主进程。
+    final incomingSession = payload['session'];
+    if (incomingSession is String && incomingSession != session) {
+      return {'ok': false, 'error': 'session_mismatch'};
+    }
+
     final changed = <String>{};
     final setValues = payload['set'];
     if (setValues is Map) {
@@ -135,7 +191,7 @@ class PrefsBridgeServer {
     if (changed.isNotEmpty && !_changes.isClosed) {
       _changes.add(changed);
     }
-    return {'ok': true, 'changed': changed.toList()};
+    return {'ok': true, 'changed': changed.toList(), 'session': session};
   }
 
   Future<void> dispose() async {
@@ -145,11 +201,25 @@ class PrefsBridgeServer {
   }
 }
 
-/// 播放器进程用来把配置写入转发给主进程的客户端。
-class PrefsBridgeClient {
-  PrefsBridgeClient(this.port);
+class _BridgeEndpoint {
+  const _BridgeEndpoint({required this.port, required this.session});
 
   final int port;
+  final String session;
+}
+
+/// 播放器进程用来把配置写入转发给主进程的客户端。
+///
+/// 启动时拿到主进程的端口作为兜底；之后每次请求都会重新读取端点文件，
+/// 支持主窗口重启后自动发现新端口。
+class PrefsBridgeClient {
+  PrefsBridgeClient(this.port, {this.endpointFile});
+
+  /// 启动参数里带的主进程端口（端点文件不可用时的兜底）。
+  final int port;
+
+  /// 主窗口写入的端点文件（含端口 + 会话 token）。
+  final File? endpointFile;
 
   Future<bool> set(Map<String, Object?> values) async {
     final reply = await _request({'set': values});
@@ -166,12 +236,60 @@ class PrefsBridgeClient {
     return reply != null && reply['ok'] == true;
   }
 
+  Future<_BridgeEndpoint?> _readEndpoint() async {
+    final file = endpointFile;
+    if (file == null) return null;
+    try {
+      if (!await file.exists()) return null;
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is! Map) return null;
+      final portValue = decoded['port'];
+      final sessionValue = decoded['session'];
+      if (portValue is! int || sessionValue is! String) return null;
+      return _BridgeEndpoint(port: portValue, session: sessionValue);
+    } catch (e) {
+      debugPrint('读取配置桥端点失败: $e');
+      return null;
+    }
+  }
+
   Future<Map<String, dynamic>?> _request(Map<String, Object?> payload) async {
+    // 两次尝试：第一次（重新）读取端点 → 连接失败/会话不匹配时，
+    // 再读一次端点（主窗口可能刚重启）后重试。
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final endpoint = await _readEndpoint();
+      final targetPort = endpoint?.port ?? port;
+      final body = Map<String, Object?>.from(payload);
+      if (endpoint != null) body['session'] = endpoint.session;
+      final reply = await _rawRequest(targetPort, body);
+      if (reply == null) {
+        if (attempt == 0) {
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+          continue;
+        }
+        return null;
+      }
+      if (reply['error'] == 'session_mismatch') {
+        if (attempt == 0) {
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+          continue;
+        }
+        return null;
+      }
+      return reply;
+    }
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> _rawRequest(
+    int targetPort,
+    Map<String, Object?> payload,
+  ) async {
     Socket? socket;
     try {
       socket = await Socket.connect(
         InternetAddress.loopbackIPv4,
-        port,
+        targetPort,
         timeout: const Duration(milliseconds: 800),
       );
       socket.write(jsonEncode(payload));
