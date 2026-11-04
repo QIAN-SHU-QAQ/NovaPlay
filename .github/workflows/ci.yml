@@ -1,33 +1,125 @@
 name: CI
+run-name: "${{ inputs.pr_number && format('CI PR #{0} head:{1} base:{2}', inputs.pr_number, inputs.head_sha, inputs.base_sha) || 'CI main' }}"
 
 on:
   push:
-    branches: [main, master]
-  pull_request:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number; leave empty to check main'
+        type: string
+        default: ''
+      head_sha:
+        description: 'Exact PR head SHA'
+        type: string
+        default: ''
+      base_sha:
+        description: 'Exact main SHA'
+        type: string
+        default: ''
+
+# PR validation is dispatched by the trusted controller. PR code receives no
+# secrets, write permissions, self-hosted runners or shared caches.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ inputs.pr_number && format('ci-pr-{0}', inputs.pr_number) || 'ci-main' }}
+  cancel-in-progress: true
+
+env:
+  NOVAPLAY_PR: ${{ inputs.pr_number }}
+  NOVAPLAY_HEAD: ${{ inputs.head_sha }}
+  NOVAPLAY_BASE: ${{ inputs.base_sha }}
 
 jobs:
-  analyze-test:
-    runs-on: windows-latest
+  automation-tests:
+    runs-on: windows-2022
+    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify exact validation target
+        shell: pwsh
+        run: |
+          if ($env:NOVAPLAY_PR) {
+            if ($env:NOVAPLAY_PR -notmatch '^[1-9][0-9]*$' -or $env:NOVAPLAY_HEAD -notmatch '^[a-f0-9]{40}$' -or $env:NOVAPLAY_BASE -notmatch '^[a-f0-9]{40}$') { throw 'Invalid target' }
+            $actualHead = git rev-parse HEAD^2
+            if ($LASTEXITCODE -ne 0 -or $actualHead -ne $env:NOVAPLAY_HEAD) { throw 'PR head changed; request new validation' }
+            $actualBase = git rev-parse HEAD^1
+            if ($LASTEXITCODE -ne 0 -or $actualBase -ne $env:NOVAPLAY_BASE) { throw 'Main changed; request new validation' }
+          }
+      - name: Test automation policy
+        run: node --test .github/automation/*.test.cjs
 
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+  analyze-test:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify exact validation target
+        shell: pwsh
+        run: |
+          if ($env:NOVAPLAY_PR) {
+            if ($env:NOVAPLAY_PR -notmatch '^[1-9][0-9]*$' -or $env:NOVAPLAY_HEAD -notmatch '^[a-f0-9]{40}$' -or $env:NOVAPLAY_BASE -notmatch '^[a-f0-9]{40}$') { throw 'Invalid target' }
+            $actualHead = git rev-parse HEAD^2
+            if ($LASTEXITCODE -ne 0 -or $actualHead -ne $env:NOVAPLAY_HEAD) { throw 'PR head changed; request new validation' }
+            $actualBase = git rev-parse HEAD^1
+            if ($LASTEXITCODE -ne 0 -or $actualBase -ne $env:NOVAPLAY_BASE) { throw 'Main changed; request new validation' }
+          }
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: '3.29.3'
           channel: stable
-          cache: true
-
-      - name: Pub get
-        run: flutter pub get
-
+          cache: false
+      - name: Locked dependencies
+        run: flutter pub get --enforce-lockfile
       - name: Format check
         run: dart format --output=none --set-exit-if-changed lib test
-
       - name: Analyze
-        run: flutter analyze
-
+        run: flutter analyze --no-pub
       - name: Test
-        run: flutter test
+        run: flutter test --no-pub
+
+  windows-build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify exact validation target
+        shell: pwsh
+        run: |
+          if ($env:NOVAPLAY_PR) {
+            if ($env:NOVAPLAY_PR -notmatch '^[1-9][0-9]*$' -or $env:NOVAPLAY_HEAD -notmatch '^[a-f0-9]{40}$' -or $env:NOVAPLAY_BASE -notmatch '^[a-f0-9]{40}$') { throw 'Invalid target' }
+            $actualHead = git rev-parse HEAD^2
+            if ($LASTEXITCODE -ne 0 -or $actualHead -ne $env:NOVAPLAY_HEAD) { throw 'PR head changed; request new validation' }
+            $actualBase = git rev-parse HEAD^1
+            if ($LASTEXITCODE -ne 0 -or $actualBase -ne $env:NOVAPLAY_BASE) { throw 'Main changed; request new validation' }
+          }
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.29.3'
+          channel: stable
+          cache: false
+      - name: Locked dependencies
+        run: flutter pub get --enforce-lockfile
+      - name: Build Windows Release
+        run: flutter build windows --release --no-pub --target lib/main.dart
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-release-${{ inputs.pr_number || 'main' }}-${{ github.run_id }}
+          path: build/windows/x64/runner/Release/
+          if-no-files-found: error
+          retention-days: 7

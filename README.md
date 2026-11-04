@@ -103,7 +103,7 @@ flutter test
 flutter build windows --release
 ```
 
-仓库已配置 GitHub Actions（`.github/workflows/ci.yml`）：每次 push / PR 会检查格式（`dart format --set-exit-if-changed`）、`flutter analyze` 与 `flutter test`。
+仓库已配置 GitHub Actions：主分支 push 和 PR 的受控 CI 会检查自动化策略、Dart 格式、`flutter analyze`、`flutter test` 并构建 Windows Release。PR 由主分支机器人自动派发验证；纯文档满足条件后自动合并，代码需要当前提交的维护者审核，关键代码还需专项验收。规则和异常处理见 [PR 自动检查与合并](.github/AUTOMATION.md)。
 
 测试使用离线替身，不需要请求在线片库。实际播放与第三方接口的可用性需要另行实测。
 
