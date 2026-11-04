@@ -6,19 +6,28 @@ import 'package:flutter/foundation.dart';
 
 /// 跨进程配置桥。
 ///
-/// 播放窗口是独立进程，它写入的观看进度/倍速等如果直接写
+/// 播放窗口是独立进程，它写入的观看进度/收藏等如果直接写
 /// SharedPreferences，会和主进程各写整份配置互相覆盖（Windows 的
 /// legacy 实现没有跨进程一致性）。因此约定：
 ///
 /// - **主窗口进程是唯一持久化写入方**；
-/// - 播放器进程把要写的键值通过本机 127.0.0.1 TCP 交给主进程；
-/// - 主进程写入后广播变更，界面据此刷新。
+/// - 播放器进程把写入通过本机 127.0.0.1 TCP 交给主进程；
+/// - 标量设置走 `set`/`remove`；历史/收藏/搜索历史走**语义操作**
+///   （`history.upsert` 等），由主进程在最新状态上做合并，避免客户端用
+///   启动时的旧缓存拼出整份列表覆盖新数据；
+/// - 主进程写入后广播变更，界面据此刷新；
+/// - 主进程不可用时，播放器把操作写入本地日志文件（journal），
+///   下次主进程启动时回放，绝不直接写整份 SharedPreferences。
 ///
 /// 传输使用「一行 JSON 一个请求/响应」的极简协议（不依赖 HttpClient，
 /// 便于在 Flutter 测试环境里直接使用）。
-/// 主窗口关闭时播放器会回退到直接写本地（此时没有第二个写者，不会冲突）。
 class PrefsBridgeServer {
-  PrefsBridgeServer._(this._serverSocket, this._onSet, this._onRemove) {
+  PrefsBridgeServer._(
+    this._serverSocket,
+    this._onSet,
+    this._onRemove,
+    this._onOps,
+  ) {
     _serverSocket.listen(_handleConnection);
   }
 
@@ -30,6 +39,8 @@ class PrefsBridgeServer {
   static Future<PrefsBridgeServer?> start({
     required Future<void> Function(String key, Object? value) onSet,
     required Future<void> Function(String key) onRemove,
+    required Future<Iterable<String>> Function(List<Map<String, dynamic>> ops)
+    onOps,
   }) async {
     final existing = _instance;
     if (existing != null) return existing;
@@ -38,7 +49,7 @@ class PrefsBridgeServer {
         InternetAddress.loopbackIPv4,
         0,
       );
-      final bridge = PrefsBridgeServer._(serverSocket, onSet, onRemove);
+      final bridge = PrefsBridgeServer._(serverSocket, onSet, onRemove, onOps);
       _instance = bridge;
       debugPrint('跨进程配置桥已启动: 127.0.0.1:${bridge.port}');
       return bridge;
@@ -51,6 +62,8 @@ class PrefsBridgeServer {
   final ServerSocket _serverSocket;
   final Future<void> Function(String key, Object? value) _onSet;
   final Future<void> Function(String key) _onRemove;
+  final Future<Iterable<String>> Function(List<Map<String, dynamic>> ops)
+  _onOps;
   final StreamController<Set<String>> _changes =
       StreamController<Set<String>>.broadcast();
 
@@ -110,10 +123,19 @@ class PrefsBridgeServer {
         changed.add(key);
       }
     }
+    final ops = payload['ops'];
+    if (ops is List && ops.isNotEmpty) {
+      final normalized = ops
+          .whereType<Map>()
+          .map((op) => op.cast<String, dynamic>())
+          .toList(growable: false);
+      changed.addAll(await _onOps(normalized));
+    }
+
     if (changed.isNotEmpty && !_changes.isClosed) {
       _changes.add(changed);
     }
-    return {'ok': true};
+    return {'ok': true, 'changed': changed.toList()};
   }
 
   Future<void> dispose() async {
@@ -139,8 +161,10 @@ class PrefsBridgeClient {
     return reply != null && reply['ok'] == true;
   }
 
-  /// 每次请求使用独立连接，这里无需释放资源；保留方法便于调用方统一管理生命周期。
-  void dispose() {}
+  Future<bool> ops(List<Map<String, dynamic>> ops) async {
+    final reply = await _request({'ops': ops});
+    return reply != null && reply['ok'] == true;
+  }
 
   Future<Map<String, dynamic>?> _request(Map<String, Object?> payload) async {
     Socket? socket;
@@ -170,4 +194,7 @@ class PrefsBridgeClient {
       socket?.destroy();
     }
   }
+
+  /// 每次请求使用独立连接，这里无需释放资源；保留方法便于调用方统一管理生命周期。
+  void dispose() {}
 }

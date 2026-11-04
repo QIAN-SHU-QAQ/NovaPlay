@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/history_item.dart';
@@ -29,24 +31,49 @@ class DatabaseService {
   /// 播放器进程使用：把写操作转发给主进程，避免两个进程互相覆盖配置。
   PrefsBridgeClient? _bridge;
 
+  /// 主进程不可用时积压的语义操作（按顺序重试，直到成功）。
+  final List<Map<String, dynamic>> _pendingOps = [];
+
+  /// 积压操作的离线日志目录（真实进程使用应用支持目录；测试可注入临时目录）。
+  Directory? _journalDir;
+  Timer? _retryTimer;
+  bool _flushing = false;
+
   Future<void> init() async {
     _prefs ??= await SharedPreferences.getInstance();
   }
 
   /// 播放器进程启动时接入主进程的配置桥。
-  void attachBridge(PrefsBridgeClient client) {
+  ///
+  /// [journalDir] 仅供测试注入；正式运行时使用应用支持目录下的 `pending_ops/`。
+  void attachBridge(PrefsBridgeClient client, {Directory? journalDir}) {
     _bridge = client;
+    if (journalDir != null) _journalDir = journalDir;
+    _retryTimer ??= Timer.periodic(const Duration(seconds: 3), (_) {
+      unawaited(_flushPendingOps());
+    });
+    unawaited(_flushPendingOps());
   }
 
   void detachBridge() {
+    _retryTimer?.cancel();
+    _retryTimer = null;
     _bridge?.dispose();
     _bridge = null;
+    _journalDir = null;
   }
 
   @visibleForTesting
   bool get hasBridge => _bridge != null;
 
-  /// 主进程应用远程写入（由 [PrefsBridgeServer] 回调）。
+  @visibleForTesting
+  List<Map<String, dynamic>> get pendingOps =>
+      List<Map<String, dynamic>>.unmodifiable(_pendingOps);
+
+  @visibleForTesting
+  void setJournalDirectory(Directory? dir) => _journalDir = dir;
+
+  /// 主进程应用远程写入（标量设置）。
   Future<void> applyRemoteSet(String key, Object? value) async {
     final prefs = _store;
     if (prefs == null) return;
@@ -67,11 +94,205 @@ class DatabaseService {
     }
   }
 
-  /// 从磁盘重新加载：播放进程写入的历史/收藏，主进程需要主动刷新。
+  /// 主进程应用来自播放器进程的语义操作。
+  ///
+  /// 关键点：历史/收藏等操作在主进程的**最新状态**上执行，而不是接受
+  /// 客户端用旧缓存拼出的整份列表；这样多个播放器同时写也不会互相覆盖。
+  Future<Iterable<String>> applyRemoteOps(
+    List<Map<String, dynamic>> ops,
+  ) async {
+    final changed = <String>{};
+    for (final op in ops) {
+      final key = await _applyOpLocal(op);
+      if (key != null) changed.add(key);
+    }
+    return changed;
+  }
+
+  Future<String?> _applyOpLocal(Map<String, dynamic> op) async {
+    final type = op['op'];
+    switch (type) {
+      case 'history.upsert':
+        final raw = op['item'];
+        if (raw is! Map) return null;
+        final item = HistoryItem.fromJson(raw.cast<String, dynamic>());
+        await _enqueueWrite(() => _saveHistoryLocal(item));
+        return _historyKey;
+      case 'history.remove':
+        final videoId = op['videoId'];
+        if (videoId is! String) return null;
+        await _enqueueWrite(() => _removeHistoryLocal(videoId));
+        return _historyKey;
+      case 'history.clear':
+        await _enqueueWrite(_clearHistoryLocal);
+        return _historyKey;
+      case 'favorites.add':
+        final raw = op['item'];
+        if (raw is! Map) return null;
+        final video = VideoModel.fromJson(raw.cast<String, dynamic>());
+        await _enqueueWrite(() => _addFavoriteLocal(video));
+        return _favoritesKey;
+      case 'favorites.remove':
+        final videoId = op['videoId'];
+        if (videoId is! String) return null;
+        await _enqueueWrite(() => _removeFavoriteLocal(videoId));
+        return _favoritesKey;
+      case 'search.upsert':
+        final query = op['query'];
+        if (query is! String) return null;
+        await _enqueueWrite(() => _addSearchHistoryLocal(query));
+        return _searchHistoryKey;
+      case 'search.clear':
+        await _enqueueWrite(_clearSearchHistoryLocal);
+        return _searchHistoryKey;
+      case 'set':
+        final key = op['key'];
+        if (key is! String) return null;
+        await applyRemoteSet(key, op['value']);
+        return key;
+      case 'remove':
+        final key = op['key'];
+        if (key is! String) return null;
+        await applyRemoteSet(key, null);
+        return key;
+      default:
+        debugPrint('未知的跨进程操作: $type');
+        return null;
+    }
+  }
+
+  /// 把其他进程（播放器）离线积压的操作合并回本地存储（主进程启动时调用）。
+  ///
+  /// 回放是幂等的：history 按 videoId upsert、favorites 按 id 去重、
+  /// 标量设置为覆盖写，因此重复回放同一个日志不会产生重复数据。
+  Future<void> flushPendingJournals() async {
+    final dir = await _resolveJournalDir();
+    if (dir == null) return;
+    try {
+      final entries = await dir.list().toList();
+      for (final entity in entries) {
+        if (entity is! File || !entity.path.endsWith('.json')) continue;
+        try {
+          final raw = await entity.readAsString();
+          final decoded = jsonDecode(raw);
+          if (decoded is List) {
+            for (final op in decoded) {
+              if (op is Map) {
+                await _applyOpLocal(op.cast<String, dynamic>());
+              }
+            }
+          }
+          await entity.delete();
+        } catch (e) {
+          debugPrint('回放离线操作失败 ${entity.path}: $e');
+        }
+      }
+    } catch (e) {
+      debugPrint('扫描离线操作日志失败: $e');
+    }
+  }
+
+  Future<Directory?> _resolveJournalDir() async {
+    final existing = _journalDir;
+    if (existing != null) return existing;
+    if (kIsWeb) return null;
+    try {
+      final support = await getApplicationSupportDirectory();
+      final dir = Directory(
+        '${support.path}${Platform.pathSeparator}pending_ops',
+      );
+      if (!await dir.exists()) await dir.create(recursive: true);
+      _journalDir = dir;
+      return dir;
+    } catch (e) {
+      debugPrint('初始化离线操作目录失败: $e');
+      return null;
+    }
+  }
+
+  String get _journalFileName => 'pending_ops.$pid.json';
+
+  File? _journalFile() {
+    final dir = _journalDir;
+    if (dir == null) return null;
+    return File('${dir.path}${Platform.pathSeparator}$_journalFileName');
+  }
+
+  Future<void> _persistJournal() async {
+    final dir = await _resolveJournalDir();
+    if (dir == null) return;
+    final file = _journalFile();
+    if (file == null) return;
+    try {
+      if (_pendingOps.isEmpty) {
+        if (await file.exists()) await file.delete();
+        return;
+      }
+      final tmp = File('${file.path}.tmp');
+      await tmp.writeAsString(jsonEncode(_pendingOps));
+      if (await file.exists()) await file.delete();
+      await tmp.rename(file.path);
+    } catch (e) {
+      debugPrint('保存离线操作失败: $e');
+    }
+  }
+
+  /// 发送语义操作；失败时进入积压队列，并写入离线日志等待重试/下次启动回放。
+  Future<void> _dispatchOp(Map<String, dynamic> op) async {
+    final bridge = _bridge;
+    if (bridge == null) return;
+    if (await bridge.ops([op])) return;
+    _pendingOps.add(op);
+    await _persistJournal();
+  }
+
+  /// 发送标量设置；失败时同样进入积压队列。
+  Future<void> _dispatchWrite(
+    Map<String, Object?> setValues,
+    List<String>? removeKeys,
+  ) async {
+    final bridge = _bridge;
+    if (bridge == null) return;
+    final ok =
+        removeKeys != null
+            ? await bridge.remove(removeKeys)
+            : await bridge.set(setValues);
+    if (ok) return;
+    if (removeKeys != null) {
+      for (final key in removeKeys) {
+        _pendingOps.add({'op': 'remove', 'key': key});
+      }
+    } else {
+      setValues.forEach((key, value) {
+        _pendingOps.add({'op': 'set', 'key': key, 'value': value});
+      });
+    }
+    await _persistJournal();
+  }
+
+  Future<void> _flushPendingOps() async {
+    final bridge = _bridge;
+    if (bridge == null || _flushing || _pendingOps.isEmpty) return;
+    _flushing = true;
+    try {
+      final batch = List<Map<String, dynamic>>.from(_pendingOps);
+      if (await bridge.ops(batch)) {
+        _pendingOps.clear();
+        await _persistJournal();
+      }
+    } finally {
+      _flushing = false;
+    }
+  }
+
+  /// 仅测试用：写入/读取积压队列后立即尝试落盘。
+  @visibleForTesting
+  Future<void> persistPendingOpsForTest() => _persistJournal();
+
+  /// 从磁盘重新加载（兜底）：跨进程一致性由配置桥负责，本方法只做尽力刷新。
   ///
   /// 注意：Windows 的 legacy shared_preferences 实现中 `reload()` 仍会读
-  /// 进程内缓存，不能保证拿到子进程写入。跨进程一致性由
-  /// [PrefsBridgeServer] 负责，此方法只作为兜底。
+  /// 进程内缓存，不能保证拿到子进程写入。
   Future<void> reloadFromDisk() async {
     final prefs = _prefs;
     if (prefs == null) return;
@@ -82,10 +303,11 @@ class DatabaseService {
     }
   }
 
-  /// 仅测试用：丢弃缓存的 prefs 实例，并清空写队列（避免跨测试挂起的 Future）。
+  /// 仅测试用：丢弃缓存的 prefs 实例，清空写队列与积压操作。
   @visibleForTesting
   void resetForTest() {
     detachBridge();
+    _pendingOps.clear();
     _prefs = null;
     _writeChain = Future<void>.value();
     _writeZone = null;
@@ -111,41 +333,41 @@ class DatabaseService {
     return next;
   }
 
-  // 写入路由：播放器进程走主进程桥，主进程（或测试）直接写本地。
+  // 写入路由：播放器进程走主进程桥（失败进离线日志），主进程/测试直接写本地。
   Future<void> _setBool(String key, bool value) async {
     final bridge = _bridge;
-    if (bridge != null && await bridge.set({key: value})) return;
+    if (bridge != null) {
+      await _dispatchWrite({key: value}, null);
+      return;
+    }
     await _store?.setBool(key, value);
   }
 
   Future<void> _setInt(String key, int value) async {
     final bridge = _bridge;
-    if (bridge != null && await bridge.set({key: value})) return;
+    if (bridge != null) {
+      await _dispatchWrite({key: value}, null);
+      return;
+    }
     await _store?.setInt(key, value);
   }
 
   Future<void> _setDouble(String key, double value) async {
     final bridge = _bridge;
-    if (bridge != null && await bridge.set({key: value})) return;
+    if (bridge != null) {
+      await _dispatchWrite({key: value}, null);
+      return;
+    }
     await _store?.setDouble(key, value);
   }
 
   Future<void> _setString(String key, String value) async {
     final bridge = _bridge;
-    if (bridge != null && await bridge.set({key: value})) return;
+    if (bridge != null) {
+      await _dispatchWrite({key: value}, null);
+      return;
+    }
     await _store?.setString(key, value);
-  }
-
-  Future<void> _setStringList(String key, List<String> value) async {
-    final bridge = _bridge;
-    if (bridge != null && await bridge.set({key: value})) return;
-    await _store?.setStringList(key, value);
-  }
-
-  Future<void> _removeKey(String key) async {
-    final bridge = _bridge;
-    if (bridge != null && await bridge.remove([key])) return;
-    await _store?.remove(key);
   }
 
   // Search History
@@ -154,20 +376,34 @@ class DatabaseService {
   }
 
   Future<void> addSearchHistory(String query) {
-    return _enqueueWrite(() async {
-      if (_store == null) return;
-      final history = getSearchHistory();
-      history.remove(query);
-      history.insert(0, query);
-      if (history.length > _searchHistoryLimit) {
-        history.removeLast();
-      }
-      await _setStringList(_searchHistoryKey, history);
-    });
+    if (_bridge != null) {
+      return _enqueueWrite(
+        () => _dispatchOp({'op': 'search.upsert', 'query': query}),
+      );
+    }
+    return _enqueueWrite(() => _addSearchHistoryLocal(query));
+  }
+
+  Future<void> _addSearchHistoryLocal(String query) async {
+    if (_store == null) return;
+    final history = getSearchHistory();
+    history.remove(query);
+    history.insert(0, query);
+    if (history.length > _searchHistoryLimit) {
+      history.removeLast();
+    }
+    await _store?.setStringList(_searchHistoryKey, history);
   }
 
   Future<void> clearSearchHistory() {
-    return _enqueueWrite(() => _removeKey(_searchHistoryKey));
+    if (_bridge != null) {
+      return _enqueueWrite(() => _dispatchOp({'op': 'search.clear'}));
+    }
+    return _enqueueWrite(_clearSearchHistoryLocal);
+  }
+
+  Future<void> _clearSearchHistoryLocal() async {
+    await _store?.remove(_searchHistoryKey);
   }
 
   // Favorites（存 VideoModel 快照，收藏页无需回源即可展示）
@@ -180,26 +416,40 @@ class DatabaseService {
   }
 
   Future<void> addFavorite(VideoModel video) {
-    return _enqueueWrite(() async {
-      if (_store == null) return;
-      final favorites = getFavorites()..removeWhere((v) => v.id == video.id);
-      favorites.insert(0, video);
-      await _setString(
-        _favoritesKey,
-        jsonEncode(favorites.map((v) => v.toJson()).toList()),
+    if (_bridge != null) {
+      return _enqueueWrite(
+        () => _dispatchOp({'op': 'favorites.add', 'item': video.toJson()}),
       );
-    });
+    }
+    return _enqueueWrite(() => _addFavoriteLocal(video));
+  }
+
+  Future<void> _addFavoriteLocal(VideoModel video) async {
+    if (_store == null) return;
+    final favorites = getFavorites()..removeWhere((v) => v.id == video.id);
+    favorites.insert(0, video);
+    await _store?.setString(
+      _favoritesKey,
+      jsonEncode(favorites.map((v) => v.toJson()).toList()),
+    );
   }
 
   Future<void> removeFavorite(String videoId) {
-    return _enqueueWrite(() async {
-      if (_store == null) return;
-      final favorites = getFavorites()..removeWhere((v) => v.id == videoId);
-      await _setString(
-        _favoritesKey,
-        jsonEncode(favorites.map((v) => v.toJson()).toList()),
+    if (_bridge != null) {
+      return _enqueueWrite(
+        () => _dispatchOp({'op': 'favorites.remove', 'videoId': videoId}),
       );
-    });
+    }
+    return _enqueueWrite(() => _removeFavoriteLocal(videoId));
+  }
+
+  Future<void> _removeFavoriteLocal(String videoId) async {
+    if (_store == null) return;
+    final favorites = getFavorites()..removeWhere((v) => v.id == videoId);
+    await _store?.setString(
+      _favoritesKey,
+      jsonEncode(favorites.map((v) => v.toJson()).toList()),
+    );
   }
 
   // Watch History（按 videoId upsert，最新的排最前，封顶 _historyLimit）
@@ -220,34 +470,54 @@ class DatabaseService {
   }
 
   Future<void> saveHistory(HistoryItem item) {
-    return _enqueueWrite(() async {
-      if (_store == null) return;
-      final history =
-          getHistory()..removeWhere((h) => h.videoId == item.videoId);
-      history.insert(0, item);
-      if (history.length > _historyLimit) {
-        history.removeLast();
-      }
-      await _setString(
-        _historyKey,
-        jsonEncode(history.map((h) => h.toJson()).toList()),
+    if (_bridge != null) {
+      return _enqueueWrite(
+        () => _dispatchOp({'op': 'history.upsert', 'item': item.toJson()}),
       );
-    });
+    }
+    return _enqueueWrite(() => _saveHistoryLocal(item));
+  }
+
+  Future<void> _saveHistoryLocal(HistoryItem item) async {
+    if (_store == null) return;
+    final history = getHistory()..removeWhere((h) => h.videoId == item.videoId);
+    history.insert(0, item);
+    if (history.length > _historyLimit) {
+      history.removeLast();
+    }
+    await _store?.setString(
+      _historyKey,
+      jsonEncode(history.map((h) => h.toJson()).toList()),
+    );
   }
 
   Future<void> removeHistory(String videoId) {
-    return _enqueueWrite(() async {
-      if (_store == null) return;
-      final history = getHistory()..removeWhere((h) => h.videoId == videoId);
-      await _setString(
-        _historyKey,
-        jsonEncode(history.map((h) => h.toJson()).toList()),
+    if (_bridge != null) {
+      return _enqueueWrite(
+        () => _dispatchOp({'op': 'history.remove', 'videoId': videoId}),
       );
-    });
+    }
+    return _enqueueWrite(() => _removeHistoryLocal(videoId));
+  }
+
+  Future<void> _removeHistoryLocal(String videoId) async {
+    if (_store == null) return;
+    final history = getHistory()..removeWhere((h) => h.videoId == videoId);
+    await _store?.setString(
+      _historyKey,
+      jsonEncode(history.map((h) => h.toJson()).toList()),
+    );
   }
 
   Future<void> clearHistory() {
-    return _enqueueWrite(() => _removeKey(_historyKey));
+    if (_bridge != null) {
+      return _enqueueWrite(() => _dispatchOp({'op': 'history.clear'}));
+    }
+    return _enqueueWrite(_clearHistoryLocal);
+  }
+
+  Future<void> _clearHistoryLocal() async {
+    await _store?.remove(_historyKey);
   }
 
   // Settings
@@ -321,12 +591,8 @@ class DatabaseService {
   }
 
   Future<void> saveSources(List<SourceConfig> sources) {
-    return _enqueueWrite(() async {
-      await _setString(
-        _sourcesKey,
-        jsonEncode(sources.map((s) => s.toJson()).toList()),
-      );
-    });
+    final json = jsonEncode(sources.map((s) => s.toJson()).toList());
+    return _enqueueWrite(() => _setString(_sourcesKey, json));
   }
 
   String? getActiveSourceId() => _store?.getString(_activeSourceKey);

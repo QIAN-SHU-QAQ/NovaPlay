@@ -50,10 +50,14 @@ Future<void> main(List<String> args) async {
     return;
   }
 
-  // 主窗口进程是唯一持久化写入方：播放器进程通过本机 HTTP 把写操作交给这里。
+  // 主窗口进程是唯一持久化写入方：
+  // 1) 先回放播放器进程离线积压的操作（主窗口关闭期间产生）；
+  // 2) 再启动配置桥，接收运行中的播放器进程发来的标量设置/语义操作。
+  await DatabaseService().flushPendingJournals();
   await PrefsBridgeServer.start(
     onSet: (key, value) => DatabaseService().applyRemoteSet(key, value),
     onRemove: (key) => DatabaseService().applyRemoteSet(key, null),
+    onOps: (ops) => DatabaseService().applyRemoteOps(ops),
   );
 
   runApp(const ProviderScope(child: NovaPlayApp()));
