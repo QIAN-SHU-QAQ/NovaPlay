@@ -26,6 +26,8 @@ module.exports = async ({ github, context, core }) => {
       const files = await github.paginate(github.rest.pulls.listFiles, { ...prParams, per_page: 100 });
       if (!files.length || files.length !== pr.changed_files) throw new Error('Incomplete file list; refusing to classify');
       const { kind } = classifyFiles(files);
+      const changesWorkflow = files.some(file => [file.filename, file.previous_filename || '']
+        .some(path => path.startsWith('.github/workflows/')));
       const reviews = await github.paginate(github.rest.pulls.listReviews, { ...prParams, per_page: 100 });
       const maintainers = [];
       for (const review of reviews) {
@@ -50,13 +52,14 @@ module.exports = async ({ github, context, core }) => {
 
       // Enable while checks/review are pending, so native protection does the
       // final merge. Code PRs still cannot pass the maintainer/acceptance gates.
-      if (repository.allow_auto_merge && !pr.draft && !current.auto_merge) {
+      if (repository.allow_auto_merge && !pr.draft && !current.auto_merge && !changesWorkflow) {
         await github.graphql(`mutation($id: ID!) {
           enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: SQUASH}) {
             pullRequest { number }
           }
         }`, { id: current.node_id });
       }
+      if (changesWorkflow) core.info(`#${pr.number}: workflow files require a maintainer to perform the final merge`);
 
       const name = validationName(pr.number, head, base);
       const run = runs.filter(run => run.display_title === name && run.head_branch === repository.default_branch)

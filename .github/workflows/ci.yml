@@ -40,18 +40,22 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.sha }}
-          fetch-depth: 2
+          ref: ${{ inputs.pr_number && inputs.base_sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Verify exact validation target
         shell: pwsh
         run: |
           if ($env:NOVAPLAY_PR) {
             if ($env:NOVAPLAY_PR -notmatch '^[1-9][0-9]*$' -or $env:NOVAPLAY_HEAD -notmatch '^[a-f0-9]{40}$' -or $env:NOVAPLAY_BASE -notmatch '^[a-f0-9]{40}$') { throw 'Invalid target' }
-            $actualHead = git rev-parse HEAD^2
+            $actualBase = git rev-parse HEAD
+            if ($LASTEXITCODE -ne 0 -or $actualBase -ne $env:NOVAPLAY_BASE) { throw 'Wrong main commit' }
+            git fetch --no-tags origin "refs/pull/$env:NOVAPLAY_PR/head"
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to fetch PR head' }
+            $actualHead = git rev-parse FETCH_HEAD
             if ($LASTEXITCODE -ne 0 -or $actualHead -ne $env:NOVAPLAY_HEAD) { throw 'PR head changed; request new validation' }
-            $actualBase = git rev-parse HEAD^1
-            if ($LASTEXITCODE -ne 0 -or $actualBase -ne $env:NOVAPLAY_BASE) { throw 'Main changed; request new validation' }
+            git -c user.name=novaplay-validation -c user.email=validation@users.noreply.github.com merge --no-ff --no-edit $env:NOVAPLAY_HEAD
+            if ($LASTEXITCODE -ne 0) { throw 'PR cannot merge with the exact main commit; resolve conflicts' }
           }
       - name: Test automation policy
         run: node --test .github/automation/*.test.cjs
@@ -62,18 +66,22 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.sha }}
-          fetch-depth: 2
+          ref: ${{ inputs.pr_number && inputs.base_sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Verify exact validation target
         shell: pwsh
         run: |
           if ($env:NOVAPLAY_PR) {
             if ($env:NOVAPLAY_PR -notmatch '^[1-9][0-9]*$' -or $env:NOVAPLAY_HEAD -notmatch '^[a-f0-9]{40}$' -or $env:NOVAPLAY_BASE -notmatch '^[a-f0-9]{40}$') { throw 'Invalid target' }
-            $actualHead = git rev-parse HEAD^2
+            $actualBase = git rev-parse HEAD
+            if ($LASTEXITCODE -ne 0 -or $actualBase -ne $env:NOVAPLAY_BASE) { throw 'Wrong main commit' }
+            git fetch --no-tags origin "refs/pull/$env:NOVAPLAY_PR/head"
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to fetch PR head' }
+            $actualHead = git rev-parse FETCH_HEAD
             if ($LASTEXITCODE -ne 0 -or $actualHead -ne $env:NOVAPLAY_HEAD) { throw 'PR head changed; request new validation' }
-            $actualBase = git rev-parse HEAD^1
-            if ($LASTEXITCODE -ne 0 -or $actualBase -ne $env:NOVAPLAY_BASE) { throw 'Main changed; request new validation' }
+            git -c user.name=novaplay-validation -c user.email=validation@users.noreply.github.com merge --no-ff --no-edit $env:NOVAPLAY_HEAD
+            if ($LASTEXITCODE -ne 0) { throw 'PR cannot merge with the exact main commit; resolve conflicts' }
           }
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
@@ -95,18 +103,22 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.sha }}
-          fetch-depth: 2
+          ref: ${{ inputs.pr_number && inputs.base_sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Verify exact validation target
         shell: pwsh
         run: |
           if ($env:NOVAPLAY_PR) {
             if ($env:NOVAPLAY_PR -notmatch '^[1-9][0-9]*$' -or $env:NOVAPLAY_HEAD -notmatch '^[a-f0-9]{40}$' -or $env:NOVAPLAY_BASE -notmatch '^[a-f0-9]{40}$') { throw 'Invalid target' }
-            $actualHead = git rev-parse HEAD^2
+            $actualBase = git rev-parse HEAD
+            if ($LASTEXITCODE -ne 0 -or $actualBase -ne $env:NOVAPLAY_BASE) { throw 'Wrong main commit' }
+            git fetch --no-tags origin "refs/pull/$env:NOVAPLAY_PR/head"
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to fetch PR head' }
+            $actualHead = git rev-parse FETCH_HEAD
             if ($LASTEXITCODE -ne 0 -or $actualHead -ne $env:NOVAPLAY_HEAD) { throw 'PR head changed; request new validation' }
-            $actualBase = git rev-parse HEAD^1
-            if ($LASTEXITCODE -ne 0 -or $actualBase -ne $env:NOVAPLAY_BASE) { throw 'Main changed; request new validation' }
+            git -c user.name=novaplay-validation -c user.email=validation@users.noreply.github.com merge --no-ff --no-edit $env:NOVAPLAY_HEAD
+            if ($LASTEXITCODE -ne 0) { throw 'PR cannot merge with the exact main commit; resolve conflicts' }
           }
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
