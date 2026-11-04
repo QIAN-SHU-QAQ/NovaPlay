@@ -1,0 +1,99 @@
+name: windows-build
+
+# Windows 预览版构建与打包（R8）。
+# - PR/手动触发都会在干净 Windows runner 上执行锁定依赖、格式、分析、测试和 Release 构建；
+# - 手动触发可以选择创建 draft Release（需维护者核对资产后再决定公开）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（用于 ZIP 与 Release 标签，例如 1.0.0）"
+        required: false
+        default: ""
+        type: string
+      create_draft_release:
+        description: "创建 draft Release 并上传 ZIP + SHA-256"
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows preview
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.29.3"
+          cache: true
+
+      - name: Toolchain versions
+        shell: pwsh
+        run: |
+          flutter --version
+          dart --version
+          flutter config --enable-windows-desktop
+
+      - name: Install dependencies (locked)
+        run: flutter pub get --enforce-lockfile
+
+      - name: Format
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyze
+        run: flutter analyze --no-pub
+
+      - name: Test
+        run: flutter test --no-pub --reporter expanded
+
+      - name: Build Windows release
+        run: flutter build windows --release --no-pub
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($version)) { $version = "" }
+          ./scripts/package-portable.ps1 -Version $version
+
+      - name: Show package result
+        shell: pwsh
+        run: |
+          Get-ChildItem dist | Format-Table Name, Length
+          Get-Content dist/*.sha256
+
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: NovaPlay-windows-preview
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Create draft release (manual trigger only)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.create_draft_release == 'true' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $tag = "preview-${{ github.run_number }}"
+          } else {
+            $tag = $version.TrimStart('v')
+            if (-not $tag.StartsWith('v')) { $tag = "v$tag" }
+          }
+          $assets = Get-ChildItem dist -File | ForEach-Object { $_.FullName }
+          gh release create $tag $assets --draft --target "${{ github.sha }}" --title "NovaPlay $tag (Windows preview)" --notes-file docs/preview-notes.md
