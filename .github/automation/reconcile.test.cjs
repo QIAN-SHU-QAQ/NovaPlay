@@ -8,7 +8,7 @@ const base = 'b'.repeat(40);
 
 function harness({ files = [{ filename: 'docs/guide.md', status: 'modified' }],
   reviews = [], jobs = ['automation-tests', 'analyze-test', 'windows-build'],
-  hasRun = true, runStatus = 'completed', changedHead = false, incompleteFiles = false } = {}) {
+  hasRun = true, runStatus = 'completed', jobFailures = [], changedHead = false, incompleteFiles = false } = {}) {
   const calls = { statuses: [], approvals: [], dispatches: [], merges: [], failed: [] };
   let reads = 0;
   const pr = { number: 1, node_id: 'PR_1', head: { sha: head }, user: { login: 'author' },
@@ -42,7 +42,7 @@ function harness({ files = [{ filename: 'docs/guide.md', status: 'modified' }],
       if (method === listReviews) return reviews;
       if (method === listRuns) return hasRun ? [{ id: 1, display_title: validationName(1, head, base),
         head_branch: 'main', status: runStatus, conclusion: runStatus === 'completed' ? 'success' : null, html_url: 'https://example.invalid/run/1' }] : [];
-      if (method === listJobs) return jobs.map(name => ({ name, conclusion: 'success' }));
+      if (method === listJobs) return jobs.map(name => ({ name, conclusion: jobFailures.includes(name) ? 'failure' : 'success' }));
       throw new Error('Unexpected API call');
     },
     graphql: async (query, variables) => { calls.merges.push({ query, variables }); },
@@ -118,4 +118,11 @@ test('callback can reconcile once all validation jobs passed, while notification
   await run();
   assert.equal(calls.statuses.find(s => s.context === 'CI validation').state, 'success');
   assert.equal(calls.approvals.length, 1);
+});
+
+test('failed validation job publishes failure while notification job finishes', async () => {
+  const { calls, run } = harness({ runStatus: 'in_progress', jobFailures: ['windows-build'] });
+  await run();
+  assert.equal(calls.statuses.find(s => s.context === 'CI validation').state, 'failure');
+  assert.equal(calls.approvals.length, 0);
 });
