@@ -73,16 +73,18 @@ module.exports = async ({ github, context, core }) => {
           ...repo, workflow_id: 'ci.yml', ref: repository.default_branch,
           inputs: { pr_number: String(pr.number), head_sha: head, base_sha: base },
         });
-      } else if (run.status !== 'completed') {
-        await status(head, 'CI validation', 'pending', 'Isolated tests and Windows build running', run.html_url);
       } else {
         const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
           ...repo, run_id: run.id, filter: 'latest', per_page: 100,
         });
-        validated = run.conclusion === 'success' && requiredJobs.every(name =>
+        validated = requiredJobs.every(name =>
           jobs.some(job => job.name === name && job.conclusion === 'success'));
-        await status(head, 'CI validation', validated ? 'success' : 'failure',
-          validated ? 'Exact PR head/base: policy tests, Flutter tests and Windows build passed' : 'Validation failed or required jobs missing; inspect run', run.html_url);
+        if (run.status === 'completed' && run.conclusion !== 'success') validated = false;
+        const state = validated ? 'success' : run.status === 'completed' ? 'failure' : 'pending';
+        await status(head, 'CI validation', state,
+          validated ? 'Exact PR head/base: policy tests, Flutter tests and Windows build passed'
+            : state === 'failure' ? 'Validation failed or required jobs missing; inspect run'
+              : 'Isolated tests and Windows build running', run.html_url);
       }
 
       if (!validated || !decision.allowed || pr.draft) {

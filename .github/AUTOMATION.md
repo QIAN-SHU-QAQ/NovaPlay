@@ -29,7 +29,7 @@ Acceptance-SHA: 当前 PR 的完整 40 位 head SHA
 1. PR 新建或更新后，主分支上的 controller 获取文件与审核元数据，设置状态并启用等待合并。
 2. controller 从主分支派发 CI，参数绑定 PR 编号、完整 head SHA 和 main SHA。
 3. CI 在 GitHub 托管的 Windows 2022 临时 runner 检出精确 main，获取并核对精确 PR head，再本地生成测试合并提交；不依赖可能滞后的 GitHub merge ref。随后执行自动化策略测试、Flutter 格式/分析/测试与 Windows Release 构建。构建目录作为 7 天 artifact 保留，尚未代表通过便携版分发验收。
-4. 完成后 controller 验证三个必需 job 的真实结果；纯文档才获得机器人批准。代码等待维护者审核和必要的专项验收。
+4. 三个验证 job 结束后，独立通知 job 显式唤起 controller；通知 job 不检出 PR 代码、不读取构建产物，只有 Actions 派发权限。controller 验证三个必需 job 的真实结果；纯文档才获得机器人批准。代码等待维护者审核和必要的专项验收。
 5. GitHub 最终检查分支保护要求并合并。若显示分支落后，贡献者先同步 main，等待新的检查和审核。
 
 合并机器人只检出主分支，不执行 PR 代码或读取 PR 构建产物。运行 PR 代码的 CI 没有写权限、没有引用 secrets、不使用共享缓存，不在开发者本机运行。Actions 默认 token 仍为只读，仅 controller 的 job 获得合并所需权限；允许 Actions 创建批准 Review，以支持文档自动化。
