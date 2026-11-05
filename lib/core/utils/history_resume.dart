@@ -1,5 +1,6 @@
 import '../../models/history_item.dart';
 import '../../models/video_model.dart';
+import 'episode_identity.dart';
 
 /// 续播目标：刷新详情后重新解析出的播放参数。
 class HistoryResumeTarget {
@@ -60,7 +61,12 @@ Future<HistoryResumeTarget?> resolveHistoryResumeTarget(
     episodes:
         episodes
             .map(
-              (e) => {'id': e.id, 'title': e.title, 'url': e.playUrl ?? e.url},
+              (e) => {
+                'id': e.id,
+                'title': e.title,
+                'url': e.playUrl ?? e.url,
+                'pageUrl': e.url,
+              },
             )
             .toList(),
     index: index,
@@ -101,7 +107,9 @@ EpisodeModel? _snapshotEpisode(HistoryItem item) {
 /// 返回新列表中的唯一匹配下标；无法唯一确认时返回 null（不按下标猜）。
 int? _matchEpisodeIndex(EpisodeModel snapshot, List<EpisodeModel> fresh) {
   final snapshotId = snapshot.id.trim();
-  if (snapshotId.isNotEmpty) {
+  // LziApiScraper 等用列表位置生成 ep_N；刷新/重排后它会指向别的剧集，
+  // 不能作为身份。只有来源提供的真实 ID 才优先按 ID 匹配。
+  if (isStableEpisodeId(snapshotId)) {
     final matches = <int>[];
     for (var i = 0; i < fresh.length; i++) {
       if (fresh[i].id == snapshotId) matches.add(i);
@@ -110,11 +118,11 @@ int? _matchEpisodeIndex(EpisodeModel snapshot, List<EpisodeModel> fresh) {
     if (matches.length > 1) return null;
   }
 
-  for (final identity in [snapshot.playUrl, snapshot.url]) {
+  for (final identity in [snapshot.url, snapshot.playUrl]) {
     if (identity == null || identity.trim().isEmpty) continue;
     final matches = <int>[];
     for (var i = 0; i < fresh.length; i++) {
-      if (fresh[i].playUrl == identity || fresh[i].url == identity) {
+      if (fresh[i].url == identity || fresh[i].playUrl == identity) {
         matches.add(i);
       }
     }

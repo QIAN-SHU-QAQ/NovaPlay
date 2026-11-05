@@ -10,6 +10,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
 
 import '../../core/config/theme.dart';
+import '../../core/utils/episode_identity.dart';
 import '../../core/window/player_window_bridge.dart';
 import '../../models/danmaku_model.dart';
 import '../../models/history_item.dart';
@@ -160,16 +161,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return episodes[index]['title'] ?? '第 ${index + 1} 集';
   }
 
-  /// 当前集的稳定身份：优先剧集 ID，其次 URL；都没有时无法安全保存手动匹配。
+  /// 当前集的稳定身份（排除位置生成的 ep_N），无法确认时禁用手动关联。
   String? get _currentEpisodeIdentity {
     final episodes = widget.episodes;
     if (episodes == null || episodes.isEmpty) return null;
     final index = _currentIndex.clamp(0, episodes.length - 1);
-    final episode = episodes[index];
-    final id = (episode['id'] ?? '').trim();
-    if (id.isNotEmpty) return id;
-    final url = (episode['url'] ?? '').trim();
-    return url.isEmpty ? null : url;
+    return episodeIdentityFromMap(episodes[index], episodes);
   }
 
   /// 手动匹配的持久化键：作品 + 当前集（稳定身份，列表重排后仍能命中）。
@@ -368,11 +365,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             .entries
             .map(
               (e) => EpisodeModel(
-                // 使用详情页传入的真实剧集 ID，保证历史/手动弹幕关联在
-                // 剧集列表刷新或重排后仍能定位到同一集。
+                // 保存详情页传入的剧集 ID 与原始页面 URL；位置生成的 ep_N
+                // 不作为身份，续播/弹幕关联会用 pageUrl/唯一标题校验。
                 id: e.value['id'] ?? 'ep_${e.key + 1}',
                 title: e.value['title'] ?? '第 ${e.key + 1} 集',
-                url: e.value['url'] ?? '',
+                url: e.value['pageUrl'] ?? e.value['url'] ?? '',
                 index: e.key,
                 playUrl: e.value['url'],
               ),

@@ -670,6 +670,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                   'id': e.id,
                   'title': e.title,
                   'url': e.playUrl ?? e.url,
+                  'pageUrl': e.url,
                 },
               )
               .toList(),

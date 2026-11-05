@@ -181,6 +181,112 @@ void main() {
     expect(target, isNull);
   });
 
+  test('R4：LziApi 位置生成的 ep_N 不能当身份（重排后按页面 URL 定位）', () async {
+    // 快照来自上一次详情解析：id 是位置生成，url 是原始页面 URL。
+    final item = HistoryItem(
+      videoId: 'v1',
+      title: 'QA Sample',
+      episodes: [
+        _episode('ep_1', '第01集', 'https://site/ep1'),
+        _episode('ep_2', '第02集', 'https://site/ep2'),
+      ],
+      episodeIndex: 1,
+      position: const Duration(seconds: 42),
+      watchedAt: DateTime(2026, 11, 4, 12),
+    );
+
+    // 刷新后列表重排，位置生成的 ID 跟着位置变化（ep_1 现在是第2集）。
+    final target = await resolveHistoryResumeTarget(
+      item,
+      fetchDetail:
+          () async => VideoModel(
+            id: 'v1',
+            title: 'QA Sample',
+            episodes: [
+              _episode(
+                'ep_1',
+                '第02集',
+                'https://site/ep2',
+                playUrl: 'https://cdn/ep2.m3u8',
+              ),
+              _episode(
+                'ep_2',
+                '第01集',
+                'https://site/ep1',
+                playUrl: 'https://cdn/ep1.m3u8',
+              ),
+            ],
+          ),
+    );
+
+    expect(target, isNotNull);
+    expect(target!.index, 0, reason: '必须按 pageUrl 命中第2集的新位置');
+    expect(target.videoUrl, 'https://cdn/ep2.m3u8');
+  });
+
+  test('R4：LziApi 位置 ID + 缺集时返回 null，不能按位置播第3集', () async {
+    final item = HistoryItem(
+      videoId: 'v1',
+      title: 'QA Sample',
+      episodes: [
+        _episode('ep_1', '第01集', 'https://site/ep1'),
+        _episode('ep_2', '第02集', 'https://site/ep2'),
+      ],
+      episodeIndex: 1,
+      position: const Duration(seconds: 42),
+      watchedAt: DateTime(2026, 11, 4, 12),
+    );
+
+    final target = await resolveHistoryResumeTarget(
+      item,
+      fetchDetail:
+          () async => VideoModel(
+            id: 'v1',
+            title: 'QA Sample',
+            episodes: [
+              _episode('ep_1', '第01集', 'https://site/ep1'),
+              _episode('ep_2', '第03集', 'https://site/ep3'),
+            ],
+          ),
+    );
+    expect(target, isNull);
+  });
+
+  test('R4：来源提供的稳定剧集 ID 仍优先按 ID 匹配', () async {
+    final item = HistoryItem(
+      videoId: 'v1',
+      title: 'QA Sample',
+      episodes: [
+        _episode('stable-aaa', '第01集', 'https://site/ep1'),
+        _episode('stable-bbb', '第02集', 'https://site/ep2'),
+      ],
+      episodeIndex: 1,
+      position: const Duration(seconds: 42),
+      watchedAt: DateTime(2026, 11, 4, 12),
+    );
+
+    final target = await resolveHistoryResumeTarget(
+      item,
+      fetchDetail:
+          () async => VideoModel(
+            id: 'v1',
+            title: 'QA Sample',
+            episodes: [
+              _episode(
+                'stable-bbb',
+                '第02集',
+                'https://site/new-ep2',
+                playUrl: 'https://cdn/new2.m3u8',
+              ),
+              _episode('stable-aaa', '第01集', 'https://site/new-ep1'),
+            ],
+          ),
+    );
+    expect(target, isNotNull);
+    expect(target!.index, 0);
+    expect(target.videoUrl, 'https://cdn/new2.m3u8');
+  });
+
   test('R4：详情刷新失败时返回 null（调用方回退详情页）', () async {
     final target = await resolveHistoryResumeTarget(
       _history(),
