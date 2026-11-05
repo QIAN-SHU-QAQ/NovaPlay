@@ -20,6 +20,12 @@ $packageScript = Join-Path $PSScriptRoot "package-portable.ps1"
 $deployScript = Join-Path $PSScriptRoot "deploy-release.ps1"
 $script:failures = @()
 $tempRoots = @()
+$script:junctions = @()
+
+function New-AliasJunction([string]$LinkPath, [string]$TargetPath) {
+    New-Item -ItemType Junction -Path $LinkPath -Target $TargetPath -Force | Out-Null
+    $script:junctions += $LinkPath
+}
 
 function New-TempRoot([string]$Name) {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ("nova_script_test_" + $Name + "_" + [guid]::NewGuid().ToString("N"))
@@ -145,7 +151,62 @@ try {
         SkipShortcut = $true
     } "TargetDir 不能与 BuildDir"
     Test-SourceIntact "deploy: TargetDir contains BuildDir" $build5
+
+    # 6. package: parent-directory junction must be resolved, not only the leaf.
+    $root6 = New-TempRoot "pkg_parent_junction"
+    $real6 = Join-Path $root6 "real"
+    $fake6 = Join-Path $real6 "dist\NovaPlay-1.0.0-windows-x64"
+    New-FakeBuild $fake6
+    $alias6 = Join-Path $root6 "alias"
+    New-AliasJunction $alias6 $real6
+    Run-ExpectFailure "package: parent junction overlap" $packageScript @{
+        BuildDir = $fake6
+        OutputDir = (Join-Path $alias6 "dist")
+        Version = "1.0.0"
+    } "BuildDir 不能与"
+    Test-SourceIntact "package: parent junction overlap" $fake6
+
+    # 7. deploy: parent-directory junction must be resolved too.
+    $root7 = New-TempRoot "deploy_parent_junction"
+    $real7 = Join-Path $root7 "real"
+    $build7 = Join-Path $real7 "run"
+    New-FakeBuild $build7
+    $alias7 = Join-Path $root7 "alias"
+    New-AliasJunction $alias7 $real7
+    Run-ExpectFailure "deploy: parent junction overlap" $deployScript @{
+        BuildDir = $build7
+        TargetDir = (Join-Path $alias7 "run")
+        SkipShortcut = $true
+    } "TargetDir 不能与 BuildDir"
+    Test-SourceIntact "deploy: parent junction overlap" $build7
+
+    # 8. package: nonexistent leaf under a junction parent still works (safety
+    #    check must resolve the existing prefix and keep the suffix).
+    $root8 = New-TempRoot "pkg_junction_new_leaf"
+    $real8 = Join-Path $root8 "real"
+    $fake8 = Join-Path $real8 "dist\NovaPlay-2.0.0-windows-x64"
+    New-FakeBuild $fake8
+    $alias8 = Join-Path $root8 "alias"
+    New-AliasJunction $alias8 $real8
+    $out8 = Join-Path $alias8 "dist\new-output-leaf"
+    & $packageScript -BuildDir $fake8 -OutputDir $out8 -Version "2.0.0" *> $null
+    $zip8 = Join-Path $out8 "NovaPlay-2.0.0-windows-x64.zip"
+    if (Test-Path -LiteralPath $zip8) {
+        Write-Host "PASS: package: junction parent with new leaf"
+    } else {
+        $script:failures += "package: junction 父目录 + 不存在叶子时未生成 ZIP"
+        Write-Host "FAIL: package: junction parent with new leaf"
+    }
+    Test-SourceIntact "package: junction parent with new leaf" $fake8
 } finally {
+    # Remove junctions first: Remove-Item -Recurse could follow them.
+    if ($null -ne $script:junctions) {
+        foreach ($junction in $script:junctions) {
+            if (Test-Path -LiteralPath $junction) {
+                & cmd /c rmdir "$junction" 2>$null
+            }
+        }
+    }
     foreach ($root in $script:tempRoots) {
         if (Test-Path -LiteralPath $root) {
             Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

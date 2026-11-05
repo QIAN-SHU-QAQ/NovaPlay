@@ -21,21 +21,80 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Resolve junction/symlink chains so two spellings of the same directory cannot
-# bypass the overlap checks below.
-function Resolve-RealPath([string]$Path) {
-    $full = [System.IO.Path]::GetFullPath($Path)
-    for ($i = 0; $i -lt 10; $i++) {
-        $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
-        if ($null -eq $item) { break }
-        $target = $item.LinkTarget
-        if ([string]::IsNullOrWhiteSpace($target)) { break }
-        if (-not [System.IO.Path]::IsPathRooted($target)) {
-            $target = Join-Path (Split-Path -Parent $full) $target
-        }
-        $full = [System.IO.Path]::GetFullPath($target)
+# Resolve every existing parent component's junction/symlink chain, not only
+# the leaf: `alias\dist` must be recognized as the same location as
+# `real\dist` when `alias` is a junction to `real`. Nonexistent suffixes are
+# appended; loops/excessive nesting are rejected instead of silently passing.
+function Get-LinkTarget([string]$Path) {
+    # PowerShell 7 exposes LinkTarget; Windows PowerShell 5.1 exposes Target.
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return $null }
+    if ($null -ne $item.PSObject.Properties['LinkTarget']) {
+        $value = $item.LinkTarget
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
     }
-    return $full.TrimEnd('\')
+    if ($null -ne $item.PSObject.Properties['Target']) {
+        $value = @($item.Target) | Select-Object -First 1
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+    }
+    return $null
+}
+function Resolve-RealPath {
+    param(
+        [string]$Path,
+        [int]$Depth = 0,
+        [hashtable]$Visited
+    )
+    if ($Depth -gt 8) {
+        throw "路径链接层级过深，无法安全解析：$Path"
+    }
+    if ($null -eq $Visited) { $Visited = @{} }
+
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    $relative = if ($full.Length -gt $root.Length) {
+        $full.Substring($root.Length)
+    } else {
+        ''
+    }
+    $current = $root
+    $missing = @()
+    $parts = @($relative -split '[\\/]' | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_)
+    })
+
+    foreach ($part in $parts) {
+        if ($missing.Count -gt 0) {
+            $missing += $part
+            continue
+        }
+        $candidate = Join-Path $current $part
+        $item = Get-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item) {
+            # 叶子或尾部尚不存在：保留原样后缀。
+            $missing += $part
+            continue
+        }
+        $target = Get-LinkTarget $candidate
+        if (-not [string]::IsNullOrWhiteSpace($target)) {
+            if (-not [System.IO.Path]::IsPathRooted($target)) {
+                $target = Join-Path (Split-Path -Parent $candidate) $target
+            }
+            $targetFull = [System.IO.Path]::GetFullPath($target)
+            $key = $targetFull.ToLowerInvariant()
+            if ($Visited.ContainsKey($key)) {
+                throw "路径链接存在循环，无法安全解析：$Path"
+            }
+            $Visited[$key] = $true
+            $candidate = Resolve-RealPath -Path $targetFull -Depth ($Depth + 1) -Visited $Visited
+        }
+        $current = $candidate
+    }
+
+    foreach ($suffix in $missing) {
+        $current = Join-Path $current $suffix
+    }
+    return $current.TrimEnd('\')
 }
 
 function Test-PathOverlap([string]$A, [string]$B) {
