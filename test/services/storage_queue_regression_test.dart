@@ -814,6 +814,162 @@ void main() {
     expect(db.getFavorites(), isEmpty);
   });
 
+  test('P1：删除标记淘汰后，普通日志旧 add 不能复活已取消收藏', () async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    final tempDir = Directory.systemTemp.createTempSync('nova_tomb_normal_');
+    final endpoint = File(
+      '${tempDir.path}${Platform.pathSeparator}bridge_endpoint.json',
+    );
+    addTearDown(() {
+      db.resetForTest();
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    db.setJournalDirectory(tempDir);
+    db.attachBridge(
+      PrefsBridgeClient(await _deadPort(), endpointFile: endpoint),
+      journalDir: tempDir,
+    );
+    // 离线写入目标收藏：普通日志中保留旧 favorites.add。
+    await db.addFavorite(VideoModel(id: 'target', title: 'Target'));
+    db.detachBridge();
+    db.setJournalDirectory(tempDir);
+    expect(
+      tempDir.listSync().whereType<File>().any(
+        (file) => file.path.contains('pending_ops.'),
+      ),
+      isTrue,
+    );
+
+    final base = DateTime.now();
+    for (var i = 0; i < 500; i++) {
+      await db.applyRemoteOps([
+        {
+          'op': 'favorites.add',
+          'opId': 'seed-$i',
+          'at':
+              base
+                  .subtract(const Duration(minutes: 10))
+                  .add(Duration(milliseconds: i))
+                  .toIso8601String(),
+          'item': VideoModel(id: 'other-$i', title: 'Other $i').toJson(),
+        },
+      ]);
+    }
+    // 取消目标收藏后，再取消另外 500 个作品把删除标记挤出前 500。
+    await db.applyRemoteOps([
+      {
+        'op': 'favorites.remove',
+        'opId': 'rm-target',
+        'at': base.add(const Duration(minutes: 1)).toIso8601String(),
+        'videoId': 'target',
+      },
+    ]);
+    for (var i = 0; i < 500; i++) {
+      await db.applyRemoteOps([
+        {
+          'op': 'favorites.remove',
+          'opId': 'rm-other-$i',
+          'at':
+              base
+                  .add(const Duration(minutes: 2))
+                  .add(Duration(milliseconds: i))
+                  .toIso8601String(),
+          'videoId': 'other-$i',
+        },
+      ]);
+    }
+    expect(db.getFavorites(), isEmpty);
+
+    // 重启回放普通日志：旧 add 不能复活已取消的收藏。
+    db.resetForTest();
+    await db.init();
+    db.setJournalDirectory(tempDir);
+    await db.flushPendingJournals();
+    expect(db.getFavorites(), isEmpty);
+  });
+
+  test('P1：删除标记淘汰后，超大日志旧 add 不能复活已取消收藏', () async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    final tempDir = Directory.systemTemp.createTempSync('nova_tomb_big_');
+    final endpoint = File(
+      '${tempDir.path}${Platform.pathSeparator}bridge_endpoint.json',
+    );
+    addTearDown(() {
+      db.resetForTest();
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    db.setJournalDirectory(tempDir);
+    db.attachBridge(
+      PrefsBridgeClient(await _deadPort(), endpointFile: endpoint),
+      journalDir: tempDir,
+    );
+    final bigEpisodes = List.generate(
+      2000,
+      (i) => EpisodeModel(
+        id: 'ep_$i',
+        title: '第 $i 集',
+        url: 'https://cdn.test/${List.filled(250, 'x').join()}/$i.m3u8',
+      ),
+    );
+    await db.addFavorite(
+      VideoModel(id: 'target', title: 'Target', episodes: bigEpisodes),
+    );
+    expect(db.oversizedOps, hasLength(1));
+    db.detachBridge();
+    db.setJournalDirectory(tempDir);
+
+    final base = DateTime.now();
+    for (var i = 0; i < 500; i++) {
+      await db.applyRemoteOps([
+        {
+          'op': 'favorites.add',
+          'opId': 'seed-$i',
+          'at':
+              base
+                  .subtract(const Duration(minutes: 10))
+                  .add(Duration(milliseconds: i))
+                  .toIso8601String(),
+          'item': VideoModel(id: 'other-$i', title: 'Other $i').toJson(),
+        },
+      ]);
+    }
+    await db.applyRemoteOps([
+      {
+        'op': 'favorites.remove',
+        'opId': 'rm-target',
+        'at': base.add(const Duration(minutes: 1)).toIso8601String(),
+        'videoId': 'target',
+      },
+    ]);
+    for (var i = 0; i < 500; i++) {
+      await db.applyRemoteOps([
+        {
+          'op': 'favorites.remove',
+          'opId': 'rm-other-$i',
+          'at':
+              base
+                  .add(const Duration(minutes: 2))
+                  .add(Duration(milliseconds: i))
+                  .toIso8601String(),
+          'videoId': 'other-$i',
+        },
+      ]);
+    }
+    expect(db.getFavorites(), isEmpty);
+
+    db.resetForTest();
+    await db.init();
+    db.setJournalDirectory(tempDir);
+    await db.flushPendingJournals();
+    expect(db.getFavorites(), isEmpty);
+  });
+
   test('P1：超限收藏 add 在已确认 remove 之后回放不复活', () async {
     SharedPreferences.setMockInitialValues({});
     final db = DatabaseService()..resetForTest();

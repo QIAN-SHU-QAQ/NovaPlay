@@ -672,6 +672,41 @@ class DatabaseService {
     return File('${dir.path}${Platform.pathSeparator}$_journalFileName');
   }
 
+  /// 扫描仍可回放的离线日志，收集其中出现的收藏 ID。
+  ///
+  /// 删除标记（tombstone）的回收必须与“旧日志还能不能回放”一致：只要日志
+  /// 里还有某个作品的旧 `favorites.add`，就不能淘汰它的删除标记，否则主进程
+  /// 重启回放会把已取消的收藏重新插回来。
+  Future<Set<String>> _favoriteIdsInPendingJournals() async {
+    final dir = await _resolveJournalDir();
+    if (dir == null) return const <String>{};
+    final ids = <String>{};
+    try {
+      await for (final entity in dir.list(followLinks: false)) {
+        if (entity is! File) continue;
+        final name = entity.path.split(Platform.pathSeparator).last;
+        if (!name.endsWith('.json') && !name.endsWith('.processing')) {
+          continue;
+        }
+        try {
+          final decoded = jsonDecode(await entity.readAsString());
+          if (decoded is! List) continue;
+          for (final op in decoded) {
+            if (op is! Map) continue;
+            if (op['op'] != 'favorites.add') continue;
+            final item = op['item'];
+            if (item is! Map) continue;
+            final id = item['id'];
+            if (id is String && id.isNotEmpty) ids.add(id);
+          }
+        } catch (_) {
+          // 单个日志读取/解析失败不影响其他日志。
+        }
+      }
+    } catch (_) {}
+    return ids;
+  }
+
   /// 串行化 journal 快照写入：并发调用不会共用临时文件或互相删除。
   Future<void> _persistJournal() {
     final next = _journalChain.then((_) => _writeJournalSnapshot());
@@ -974,7 +1009,17 @@ class DatabaseService {
   }
 
   Future<void> _saveFavoriteTombstones(Map<String, DateTime> tombstones) async {
-    await _saveTimestampMap(_favoritesTombstonesKey, tombstones);
+    // 只有在需要裁掉删除标记时才扫描日志；被日志引用的收藏 ID 必须保留标记，
+    // 保证旧日志（普通或超大）回放时仍受删除版本约束。
+    var keepIds = const <String>{};
+    if (tombstones.length > 500) {
+      keepIds = await _favoriteIdsInPendingJournals();
+    }
+    await _saveTimestampMap(
+      _favoritesTombstonesKey,
+      tombstones,
+      keepIds: keepIds,
+    );
   }
 
   Map<String, DateTime> _loadTimestampMap(String key) {
