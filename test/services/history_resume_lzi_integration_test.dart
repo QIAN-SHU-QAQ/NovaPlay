@@ -198,4 +198,116 @@ void main() {
     expect(target, isNotNull);
     expect(target!.videoUrl, 'https://cdn.test/hls/new2');
   });
+
+  test('R5：备用源替换播放地址时保留媒体标记，重启后关联仍保留', () async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    addTearDown(db.resetForTest);
+
+    var fallbackPlaylist =
+        '第1集\$https://cdn.test/hls/old1#第2集\$https://cdn.test/hls/old2';
+    final fallbackServer = await HttpServer.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    addTearDown(() async => fallbackServer.close(force: true));
+    fallbackServer.listen((request) async {
+      await request.drain<void>();
+      request.response.statusCode = HttpStatus.ok;
+      request.response.headers.contentType = ContentType(
+        'application',
+        'json',
+        charset: 'utf-8',
+      );
+      request.response.write(
+        jsonEncode({
+          'code': 1,
+          'list': [
+            {
+              'vod_id': 99,
+              'vod_name': 'QA Sample',
+              'vod_pic': 'https://site/cover.jpg',
+              'vod_content': 'QA',
+              'vod_year': '2024',
+              'vod_score': '8.0',
+              'vod_class': '动画',
+              'vod_play_url': fallbackPlaylist,
+            },
+          ],
+        }),
+      );
+      await request.response.close();
+    });
+
+    final multiSource = LziApiScraper(
+      primary: SourceConfig(
+        id: 'lziapi',
+        name: 'LziApi',
+        baseUrl: 'http://127.0.0.1:${server.port}/api.php/provide/vod/',
+      ),
+      fallbacks: [
+        SourceConfig(
+          id: 'fallback',
+          name: 'Fallback',
+          baseUrl:
+              'http://127.0.0.1:${fallbackServer.port}/api.php/provide/vod/',
+        ),
+      ],
+    );
+
+    List<Map<String, String>> episodeMaps(VideoModel detail) {
+      return detail.episodes!
+          .map(
+            (e) => {
+              'id': e.id,
+              'title': e.title,
+              'url': e.playUrl ?? e.url,
+              'pageUrl': e.url,
+              'media': e.urlIsMediaPlayback ? 'true' : 'false',
+            },
+          )
+          .toList();
+    }
+
+    // 主源详情行为触发备用源替换路径：备用源地址是直接媒体地址。
+    final first = await multiSource.getDetail('42');
+    final firstMaps = episodeMaps(first);
+    expect(
+      firstMaps[1]['url'],
+      'https://cdn.test/hls/old2',
+      reason: '备用源替换后应使用备用源地址',
+    );
+    expect(firstMaps[1]['media'], 'true', reason: '替换路径必须保留媒体地址标记');
+    final identity = episodeIdentityFromMap(firstMaps[1], firstMaps);
+    expect(identity, 'title:第2集');
+
+    final mappingKey = DatabaseService.danmakuMappingEntryKey(
+      first.id,
+      identity!,
+    );
+    await db.setDanmakuMapping(mappingKey, {
+      'episodeId': 222,
+      'animeTitle': 'QA Sample',
+      'episodeTitle': '第2话',
+    });
+
+    // 模拟重启后备用源地址轮换（old2 → new2）。
+    db.resetForTest();
+    await db.init();
+    fallbackPlaylist =
+        '第1集\$https://cdn.test/hls/new1#第2集\$https://cdn.test/hls/new2';
+    final refreshed = await multiSource.getDetail('42');
+    final newMaps = episodeMaps(refreshed);
+    expect(newMaps[1]['media'], 'true');
+    final newIdentity = episodeIdentityFromMap(newMaps[1], newMaps);
+    expect(newIdentity, identity, reason: '备用源地址轮换后关联键必须不变');
+    expect(
+      db.getDanmakuMapping(
+        DatabaseService.danmakuMappingEntryKey(refreshed.id, newIdentity!),
+      )?['episodeId'],
+      222,
+    );
+    expect(refreshed.episodes![1].url, 'https://cdn.test/hls/new2');
+  });
 }

@@ -276,6 +276,7 @@ class LziApiScraper extends BaseScraper {
                           index: ep.index,
                           url: replacement.url,
                           playUrl: replacement.playUrl,
+                          urlIsMediaPlayback: replacement.urlIsMediaPlayback,
                         );
                       }).toList(),
                 );
