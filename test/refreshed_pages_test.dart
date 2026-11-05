@@ -167,7 +167,9 @@ void main() {
         ProviderScope(
           overrides: [
             videoDetailProvider('detail').overrideWith((ref) async => video),
-            bangumiInfoProvider(video.title).overrideWith(
+            bangumiInfoProvider(
+              BangumiQuery(videoId: video.id, title: video.title),
+            ).overrideWith(
               (ref) async => const BangumiInfo(
                 score: 8.2,
                 staff: [BangumiStaffEntry(role: '导演', name: '制作测试')],

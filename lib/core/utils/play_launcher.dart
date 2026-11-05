@@ -30,6 +30,7 @@ Future<void> launchPlayer(
   String? videoId,
   String? videoTitle,
   String? cover,
+  String? sourceId,
 }) async {
   final extra = <String, dynamic>{
     'videoUrl': videoUrl,
@@ -40,6 +41,7 @@ Future<void> launchPlayer(
     'videoId': videoId,
     'videoTitle': videoTitle,
     'cover': cover,
+    'sourceId': sourceId,
     // 主进程配置桥端口：播放器的进度/设置写入经由主进程持久化。
     'bridgePort': PrefsBridgeServer.instance?.port,
   };
@@ -66,8 +68,8 @@ final Set<String> _resuming = <String>{};
 /// 从历史条目续播（R4）。
 ///
 /// 不直接使用历史快照里的播放地址（可能已过期）：先通过 [fetchDetail]
-/// 刷新作品详情，重新定位剧集与播放地址；刷新失败或找不到对应集时回退
-/// 到作品详情页，避免播放错误地址。
+/// 刷新作品详情，重新定位剧集与播放地址；刷新失败、身份不符或找不到
+/// 对应集时回退到作品详情页，避免播放错误地址。
 Future<void> launchHistoryResume(
   BuildContext context,
   HistoryItem item, {
@@ -75,6 +77,28 @@ Future<void> launchHistoryResume(
 }) async {
   if (_resuming.contains(item.videoId)) return;
   _resuming.add(item.videoId);
+
+  // 记录发起续播时的路由位置：StatefulShellRoute 会保留旧页面，页面仍
+  // mounted 不代表还在前台。请求完成前用户切到别的分支时不能抢走导航。
+  GoRouter? router;
+  String? originUri;
+  try {
+    router = GoRouter.of(context);
+    originUri = router.state.uri.toString();
+  } catch (_) {
+    // 非 GoRouter 环境（部分组件测试）不启用路由守卫。
+  }
+  bool stillActive() {
+    if (!context.mounted) return false;
+    final currentRouter = router;
+    if (currentRouter != null &&
+        originUri != null &&
+        currentRouter.state.uri.toString() != originUri) {
+      return false;
+    }
+    return true;
+  }
+
   try {
     HistoryResumeTarget? target;
     if (fetchDetail != null) {
@@ -88,18 +112,26 @@ Future<void> launchHistoryResume(
         title: '${item.title} - ${episode.title}',
         episodes:
             item.episodes
-                .map((e) => {'title': e.title, 'url': e.playUrl ?? e.url})
+                .map(
+                  (e) => {
+                    'id': e.id,
+                    'title': e.title,
+                    'url': e.playUrl ?? e.url,
+                  },
+                )
                 .toList(),
         index: index,
         videoTitle: item.title,
         cover: item.cover,
+        sourceId: item.sourceId,
       );
     }
 
+    if (!stillActive()) return;
+
     if (target == null) {
-      if (context.mounted) {
-        context.push('/detail/${Uri.encodeComponent(item.videoId)}');
-      }
+      if (!context.mounted) return;
+      context.push('/detail/${Uri.encodeComponent(item.videoId)}');
       return;
     }
     if (!context.mounted) return;
@@ -113,6 +145,7 @@ Future<void> launchHistoryResume(
       videoId: item.videoId,
       videoTitle: target.videoTitle,
       cover: target.cover,
+      sourceId: target.sourceId ?? item.sourceId,
     );
   } finally {
     _resuming.remove(item.videoId);

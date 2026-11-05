@@ -65,6 +65,7 @@ class _PlayerWindowAppState extends State<PlayerWindowApp> {
       videoId: args['videoId'] as String?,
       videoTitle: args['videoTitle'] as String?,
       cover: args['cover'] as String?,
+      sourceId: args['sourceId'] as String?,
     );
   }
 }

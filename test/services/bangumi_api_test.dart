@@ -167,4 +167,53 @@ void main() {
     final api = _api(adapter);
     expect(await api.fetchInfo('QA 样本', subjectId: 6), isNull);
   });
+
+  test('R7：明确季号冲突的候选被排除，只用第一季候选时返回 null', () async {
+    final adapter = _FakeAdapter({
+      '/v0/search/subjects': (
+        200,
+        _searchResponse([
+          {
+            'id': 11,
+            'name': 'QA Sample',
+            'name_cn': 'QA 样本 第一季',
+            'date': '2020-01-01',
+          },
+        ]),
+      ),
+      '/v0/subjects/11': (200, _subjectResponse(11)),
+    });
+    final api = _api(adapter);
+
+    expect(await api.fetchInfo('QA 样本 第二季'), isNull);
+    // 不应请求被排除的第一季资料。
+    expect(adapter.requests, isNot(contains('/v0/subjects/11')));
+  });
+
+  test('R7：同名不同年份候选无法唯一确定时不自动取首项', () async {
+    final adapter = _FakeAdapter({
+      '/v0/search/subjects': (
+        200,
+        _searchResponse([
+          {
+            'id': 21,
+            'name': 'QA Sample',
+            'name_cn': 'QA 样本',
+            'date': '2015-01-01',
+          },
+          {
+            'id': 22,
+            'name': 'QA Sample',
+            'name_cn': 'QA 样本',
+            'date': '2024-01-01',
+          },
+        ]),
+      ),
+      '/v0/subjects/21': (200, _subjectResponse(21)),
+      '/v0/subjects/22': (200, _subjectResponse(22)),
+    });
+    final api = _api(adapter);
+
+    expect(await api.fetchInfo('QA 样本'), isNull);
+  });
 }

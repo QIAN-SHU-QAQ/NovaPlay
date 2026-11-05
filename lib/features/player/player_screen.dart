@@ -55,6 +55,9 @@ class PlayerScreen extends ConsumerStatefulWidget {
   final String? videoTitle;
   final String? cover;
 
+  /// 作品来源标识（数据源名称），随历史保存以便续播时确认作品身份。
+  final String? sourceId;
+
   const PlayerScreen({
     super.key,
     required this.videoUrl,
@@ -65,6 +68,7 @@ class PlayerScreen extends ConsumerStatefulWidget {
     this.videoId,
     this.videoTitle,
     this.cover,
+    this.sourceId,
   });
 
   @override
@@ -156,11 +160,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return episodes[index]['title'] ?? '第 ${index + 1} 集';
   }
 
-  /// 手动匹配的持久化键：作品 + 当前集。
-  String get _danmakuMappingKey {
-    final videoKey =
-        (widget.videoId ?? widget.videoTitle ?? widget.title).trim();
-    return DatabaseService.danmakuMappingEntryKey(videoKey, _currentIndex);
+  /// 当前集的稳定身份：优先剧集 ID，其次 URL；都没有时无法安全保存手动匹配。
+  String? get _currentEpisodeIdentity {
+    final episodes = widget.episodes;
+    if (episodes == null || episodes.isEmpty) return null;
+    final index = _currentIndex.clamp(0, episodes.length - 1);
+    final episode = episodes[index];
+    final id = (episode['id'] ?? '').trim();
+    if (id.isNotEmpty) return id;
+    final url = (episode['url'] ?? '').trim();
+    return url.isEmpty ? null : url;
+  }
+
+  /// 手动匹配的持久化键：作品 + 当前集（稳定身份，列表重排后仍能命中）。
+  String? get _danmakuMappingKey {
+    final videoKey = (widget.videoId ?? '').trim();
+    final episodeKey = _currentEpisodeIdentity;
+    if (videoKey.isEmpty || episodeKey == null) return null;
+    return DatabaseService.danmakuMappingEntryKey(videoKey, episodeKey);
   }
 
   /// 拉取当前集的弹幕（弹弹play）。切集会重新调用。
@@ -193,9 +210,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       );
 
       // 手动匹配优先：同一作品同一集使用用户选定的弹幕库剧集，重启后仍生效。
-      final manualMapping = DatabaseService().getDanmakuMapping(
-        _danmakuMappingKey,
-      );
+      final mappingKey = _danmakuMappingKey;
+      final manualMapping =
+          mappingKey == null
+              ? null
+              : DatabaseService().getDanmakuMapping(mappingKey);
       final mappedEpisodeId = manualMapping?['episodeId'];
       if (mappedEpisodeId is int) {
         final comments = await client.fetchComments(mappedEpisodeId);
@@ -257,6 +276,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
     final animeTitle = (widget.videoTitle ?? widget.title).trim();
     final entryKey = _danmakuMappingKey;
+    if (entryKey == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前集缺少稳定剧集标识，无法保存手动匹配')));
+      return;
+    }
     final existing = DatabaseService().getDanmakuMapping(entryKey);
     final client = DandanplayClient(
       appId: settings.appId,
@@ -343,7 +368,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             .entries
             .map(
               (e) => EpisodeModel(
-                id: 'ep_${e.key + 1}',
+                // 使用详情页传入的真实剧集 ID，保证历史/手动弹幕关联在
+                // 剧集列表刷新或重排后仍能定位到同一集。
+                id: e.value['id'] ?? 'ep_${e.key + 1}',
                 title: e.value['title'] ?? '第 ${e.key + 1} 集',
                 url: e.value['url'] ?? '',
                 index: e.key,
@@ -371,6 +398,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           videoId: videoId,
           title: widget.videoTitle ?? widget.title,
           cover: widget.cover,
+          sourceId: widget.sourceId,
           episodes: snapshots,
           episodeIndex: _currentIndex,
           position: state.position,

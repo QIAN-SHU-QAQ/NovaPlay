@@ -108,24 +108,44 @@ class BangumiApi {
     }
 
     final queryYear = _extractYear(title);
+    final querySeason = _extractSeason(title);
     final scored =
-        candidates.map((candidate) {
-            var score = _matchScore(title, candidate);
-            final candidateYear = _extractYear(candidate.date ?? '');
-            // 作品名里带年份时，年份不同的候选明显降权。
-            if (queryYear != null &&
-                candidateYear != null &&
-                queryYear != candidateYear) {
-              score -= 0.3;
-            }
-            return BangumiSubjectCandidate(
-              subjectId: candidate.subjectId,
-              name: candidate.name,
-              nameCn: candidate.nameCn,
-              date: candidate.date,
-              score: score,
-            );
-          }).toList()
+        candidates
+            .map((candidate) {
+              // 明确季号冲突的候选直接排除（第二季不能匹配第一季）。
+              final candidateSeason = _extractSeason(
+                '${candidate.nameCn ?? ''} ${candidate.name}',
+              );
+              if (querySeason != null &&
+                  candidateSeason != null &&
+                  querySeason != candidateSeason) {
+                return null;
+              }
+              var score = _matchScore(title, candidate);
+              // 季号明确匹配时提升优先级，避免被同名无季号条目以微弱优势
+              // 拖入“无法唯一确定”的并列。
+              if (querySeason != null &&
+                  candidateSeason != null &&
+                  querySeason == candidateSeason) {
+                score += 0.1;
+              }
+              final candidateYear = _extractYear(candidate.date ?? '');
+              // 作品名里带年份时，年份不同的候选明显降权。
+              if (queryYear != null &&
+                  candidateYear != null &&
+                  queryYear != candidateYear) {
+                score -= 0.3;
+              }
+              return BangumiSubjectCandidate(
+                subjectId: candidate.subjectId,
+                name: candidate.name,
+                nameCn: candidate.nameCn,
+                date: candidate.date,
+                score: score,
+              );
+            })
+            .whereType<BangumiSubjectCandidate>()
+            .toList()
           ..sort((a, b) => b.score.compareTo(a.score));
     return scored;
   }
@@ -146,6 +166,16 @@ class BangumiApi {
           );
           return null;
         }
+        // 无法唯一确认时（并列候选、同名不同年份等）不自动选首项，
+        // 交给详情页手动匹配，避免把另一部作品的资料关联过来。
+        if (candidates.length > 1 &&
+            (best.score - candidates[1].score).abs() < 0.05) {
+          debugPrint(
+            'BangumiApi: 候选无法唯一确定（${best.displayTitle} / '
+            '${candidates[1].displayTitle}），跳过自动匹配：$title',
+          );
+          return null;
+        }
         resolvedId = best.subjectId;
         matchedTitle = best.displayTitle;
       }
@@ -154,6 +184,50 @@ class BangumiApi {
       debugPrint('BangumiApi fetchInfo failed: $e');
       return null;
     }
+  }
+
+  /// 提取季号（第N季 / Season N / Nth Season），无法确定返回 null。
+  static int? _extractSeason(String input) {
+    final normalized = input.replaceAllMapped(
+      RegExp(r'[\uFF10-\uFF19]'),
+      (match) => String.fromCharCode(match.group(0)!.codeUnitAt(0) - 0xFEE0),
+    );
+    final patterns = <RegExp>[
+      RegExp(r'第\s*([0-9一二三四五六七八九十]+)\s*[季期部]'),
+      RegExp(r'season\s*([0-9]{1,2})', caseSensitive: false),
+      RegExp(r'([0-9]{1,2})(?:st|nd|rd|th)\s*season', caseSensitive: false),
+      RegExp(r'[Ss]([0-9]{1,2})(?![0-9])'),
+    ];
+    for (final pattern in patterns) {
+      final match = pattern.firstMatch(normalized);
+      if (match == null) continue;
+      final raw = match.group(1)!;
+      final value = int.tryParse(raw) ?? _parseChineseNumber(raw);
+      if (value != null && value > 0) return value;
+    }
+    return null;
+  }
+
+  static int? _parseChineseNumber(String text) {
+    const digits = {
+      '一': 1,
+      '二': 2,
+      '三': 3,
+      '四': 4,
+      '五': 5,
+      '六': 6,
+      '七': 7,
+      '八': 8,
+      '九': 9,
+    };
+    if (text.isEmpty) return null;
+    final tenIndex = text.indexOf('十');
+    if (tenIndex < 0) return digits[text];
+    final tensText = text.substring(0, tenIndex);
+    final onesText = text.substring(tenIndex + 1);
+    final tens = tensText.isEmpty ? 1 : (digits[tensText] ?? 0);
+    final ones = onesText.isEmpty ? 0 : (digits[onesText] ?? 0);
+    return tens * 10 + ones;
   }
 
   Future<BangumiInfo?> _fetchSubjectInfo(

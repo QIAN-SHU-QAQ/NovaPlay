@@ -75,6 +75,11 @@ class DatabaseService {
   @visibleForTesting
   void setJournalDirectory(Directory? dir) => _journalDir = dir;
 
+  /// 播放器进程内已确认/已提交的弹幕映射（含删除哨兵 null）。
+  ///
+  /// 通过配置桥写入后本进程立即读取到一致结果；主进程仍是唯一落盘方。
+  final Map<String, Map<String, dynamic>?> _danmakuMappingCache = {};
+
   /// 主进程应用远程写入（标量设置）。
   Future<void> applyRemoteSet(String key, Object? value) async {
     final prefs = _store;
@@ -323,6 +328,7 @@ class DatabaseService {
   void resetForTest() {
     detachBridge();
     _pendingOps.clear();
+    _danmakuMappingCache.clear();
     _prefs = null;
     _writeChain = Future<void>.value();
     _writeZone = null;
@@ -535,11 +541,14 @@ class DatabaseService {
     await _store?.remove(_historyKey);
   }
 
-  // 弹幕手动匹配映射：videoId:episodeIndex → 弹弹play 剧集（重启后仍生效）
-  static String danmakuMappingEntryKey(String videoId, int episodeIndex) =>
-      '$videoId:$episodeIndex';
+  // 弹幕手动匹配映射：作品 ID + 稳定剧集身份 → 弹弹play 剧集（重启后仍生效）
+  static String danmakuMappingEntryKey(String videoId, String episodeId) =>
+      '$videoId||$episodeId';
 
   Map<String, dynamic>? getDanmakuMapping(String entryKey) {
+    if (_danmakuMappingCache.containsKey(entryKey)) {
+      return _danmakuMappingCache[entryKey];
+    }
     final raw = _store?.getString(_danmakuMappingKey);
     if (raw == null || raw.isEmpty) return null;
     try {
@@ -556,6 +565,8 @@ class DatabaseService {
     String entryKey,
     Map<String, dynamic> value,
   ) async {
+    // 先更新本进程缓存：播放器选择后立刻重新加载弹幕时能读到新关联。
+    _danmakuMappingCache[entryKey] = value;
     if (_bridge != null) {
       await _enqueueWrite(
         () => _dispatchOp({
@@ -570,6 +581,8 @@ class DatabaseService {
   }
 
   Future<void> removeDanmakuMapping(String entryKey) async {
+    // null 哨兵：清除后本进程立即读不到旧关联，即使启动时的 prefs 快照里还有。
+    _danmakuMappingCache[entryKey] = null;
     if (_bridge != null) {
       await _enqueueWrite(
         () => _dispatchOp({'op': 'danmaku.map.remove', 'key': entryKey}),
@@ -605,14 +618,17 @@ class DatabaseService {
     await _store?.setString(_danmakuMappingKey, jsonEncode(mappings));
   }
 
-  // Bangumi 手动纠正映射：作品标题 → subjectId（详情页使用，本地持久化）
-  Map<String, dynamic>? getBangumiMapping(String titleKey) {
+  // Bangumi 手动纠正映射：完整视频 ID → subjectId（详情页使用，本地持久化）
+  //
+  // 不使用标题作为键：同名旧作/重制版会共用关联。旧版本（未发布）若留下
+  // 标题键数据，这里也不会回退读取，避免把一部作品的关联套到另一部。
+  Map<String, dynamic>? getBangumiMapping(String videoId) {
     final raw = _store?.getString(_bangumiMappingKey);
     if (raw == null || raw.isEmpty) return null;
     try {
       final decoded = jsonDecode(raw);
       if (decoded is! Map) return null;
-      final value = decoded[titleKey];
+      final value = decoded[videoId];
       return value is Map ? value.cast<String, dynamic>() : null;
     } catch (_) {
       return null;
@@ -620,21 +636,21 @@ class DatabaseService {
   }
 
   Future<void> setBangumiMapping(
-    String titleKey,
+    String videoId,
     Map<String, dynamic> value,
   ) async {
     await _enqueueWrite(() async {
       final mappings = _loadBangumiMappings();
-      mappings[titleKey] = value;
+      mappings[videoId] = value;
       await _store?.setString(_bangumiMappingKey, jsonEncode(mappings));
     });
   }
 
-  Future<void> removeBangumiMapping(String titleKey) async {
+  Future<void> removeBangumiMapping(String videoId) async {
     await _enqueueWrite(() async {
       final mappings = _loadBangumiMappings();
-      if (!mappings.containsKey(titleKey)) return;
-      mappings.remove(titleKey);
+      if (!mappings.containsKey(videoId)) return;
+      mappings.remove(videoId);
       await _store?.setString(_bangumiMappingKey, jsonEncode(mappings));
     });
   }

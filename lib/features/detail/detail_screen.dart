@@ -84,7 +84,14 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
   // ---------- 三栏布局 ----------
 
   Widget _buildThreeColumns(VideoModel video) {
-    final bangumi = ref.watch(bangumiInfoProvider(video.title)).valueOrNull;
+    final bangumi =
+        ref
+            .watch(
+              bangumiInfoProvider(
+                BangumiQuery(videoId: video.id, title: video.title),
+              ),
+            )
+            .valueOrNull;
     final showDataColumn =
         bangumi != null && (bangumi.score != null || bangumi.staff.isNotEmpty);
 
@@ -103,7 +110,8 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                 showPoster: constraints.maxWidth < 600,
               ),
             ),
-            if (wide && showDataColumn) _buildDataColumn(bangumi, video.title),
+            if (wide && showDataColumn)
+              _buildDataColumn(bangumi, video.id, video.title),
           ],
         );
       },
@@ -388,7 +396,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
 
   // ---------- 数据列 ----------
 
-  Widget _buildDataColumn(BangumiInfo bangumi, String title) {
+  Widget _buildDataColumn(BangumiInfo bangumi, String videoId, String title) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return SizedBox(
@@ -401,7 +409,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
             Align(
               alignment: Alignment.centerLeft,
               child: TextButton.icon(
-                onPressed: () => _showBangumiMatchDialog(title),
+                onPressed: () => _showBangumiMatchDialog(videoId, title),
                 icon: const Icon(Icons.tune, size: 16),
                 label: const Text('资料不准确？手动匹配'),
               ),
@@ -527,10 +535,11 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
         .toList();
   }
 
-  /// R7：手动选择 Bangumi 条目并持久化，避免自动匹配到错误作品/季数。
-  Future<void> _showBangumiMatchDialog(String title) async {
+  /// R7：手动选择 Bangumi 条目并按完整视频 ID 持久化，避免自动匹配到
+  /// 错误作品/季数，也避免同名不同作品共用一份关联。
+  Future<void> _showBangumiMatchDialog(String videoId, String title) async {
     final api = ref.read(bangumiApiProvider);
-    final existing = DatabaseService().getBangumiMapping(title);
+    final existing = DatabaseService().getBangumiMapping(videoId);
     final selected = await showDialog<Object?>(
       context: context,
       builder:
@@ -543,15 +552,17 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
     );
     if (selected == null || !mounted) return;
     if (selected is String && selected == BangumiMatchDialog.clearValue) {
-      await DatabaseService().removeBangumiMapping(title);
+      await DatabaseService().removeBangumiMapping(videoId);
     } else if (selected is BangumiSubjectCandidate) {
-      await DatabaseService().setBangumiMapping(title, {
+      await DatabaseService().setBangumiMapping(videoId, {
         'subjectId': selected.subjectId,
         'name': selected.displayTitle,
         'updatedAt': DateTime.now().toIso8601String(),
       });
     }
-    ref.invalidate(bangumiInfoProvider(title));
+    ref.invalidate(
+      bangumiInfoProvider(BangumiQuery(videoId: videoId, title: title)),
+    );
   }
 
   void _playEpisode(VideoModel video, int index) async {
@@ -654,12 +665,19 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
       title: '${video.title} - ${video.episodes![index].title}',
       episodes:
           video.episodes!
-              .map((e) => {'title': e.title, 'url': e.playUrl ?? e.url})
+              .map(
+                (e) => {
+                  'id': e.id,
+                  'title': e.title,
+                  'url': e.playUrl ?? e.url,
+                },
+              )
               .toList(),
       currentIndex: index,
       videoId: video.id,
       videoTitle: video.title,
       cover: video.cover,
+      sourceId: video.source,
     );
   }
 }
