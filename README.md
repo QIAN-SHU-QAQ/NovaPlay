@@ -152,6 +152,17 @@ icacls "E:\项目\NovaPlay\运行版" /setintegritylevel Medium /T
 powershell -ExecutionPolicy Bypass -File scripts\deploy-release.ps1
 ```
 
+### 构建 Windows 便携预览包
+
+仓库提供 `scripts/package-portable.ps1`：从 Release 构建目录生成版本化便携 ZIP、附使用说明与许可，并输出 SHA-256 校验文件。缺少 exe/DLL/`data/` 或发现日志、缓存、个人配置等不应分发的文件时会直接失败。
+
+```powershell
+flutter build windows --release
+powershell -ExecutionPolicy Bypass -File scripts\package-portable.ps1
+```
+
+产物在 `dist/`：`NovaPlay-<版本>-windows-x64.zip` 与同名 `.sha256`。CI 工作流 [windows-build](.github/workflows/windows-build.yml) 会在干净的 Windows runner 上执行锁定依赖解析、格式、分析、测试、Release 构建和打包；手动触发时可选择创建 draft Release，由维护者核对资产后再公开。干净机器验收（无 Flutter/VS、含中文和空格路径）仍需人工执行并记录。
+
 
 ## 参考
 
@@ -169,7 +180,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy-release.ps1
 当前开发依据是[下一阶段开发方向与验收要求](docs/reviews/2026-11-04-development-direction.md)。任务分为 R1–R8，各有自动化用例、实机步骤、预期结果和证据要求：
 
 1. **先修正确性：** 优先 R1 历史有序补交、R2 下载完整性，再完成 HLS 格式边界、地址刷新续播、弹幕匹配、配置桥协议和 Bangumi 资料关联。
-2. **再交付 Windows 预览版：** CI 构建、完整便携 ZIP、SHA-256、旧数据兼容和干净机器验收。
+2. **再交付 Windows 预览版：** CI 构建、完整便携 ZIP 与 SHA-256 已落地（`.github/workflows/windows-build.yml`、`scripts/package-portable.ps1`）；旧数据兼容和干净机器验收仍需人工执行并记录。
 3. **随后完善追番体验：** 想看/在看/看完、更新发现、下载路径、数据备份与故障诊断。
 
 贡献者优先领取 R1，其次 R2；PR 写明对应编号、修复前后回归和实际验收结果。真实服务或干净机器条件不足时明确标记“未验收”，不能用离线测试替代。
