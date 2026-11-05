@@ -54,4 +54,45 @@ void main() {
     ];
     expect(episodeIdentityFromMap(episodes[1], episodes), 'id:stable-bbb');
   });
+
+  test('R5：易失媒体地址不能当页面身份，改为唯一标题', () {
+    final oldEpisodes = [
+      {
+        'id': 'ep_1',
+        'title': '第1集',
+        'pageUrl': 'https://cdn.test/hls/old1.m3u8',
+      },
+      {
+        'id': 'ep_2',
+        'title': '第2集',
+        'pageUrl': 'https://cdn.test/hls/old2.m3u8',
+      },
+    ];
+    final refreshed = [
+      {
+        'id': 'ep_1',
+        'title': '第1集',
+        'pageUrl': 'https://cdn.test/hls/new1.m3u8',
+      },
+      {
+        'id': 'ep_2',
+        'title': '第2集',
+        'pageUrl': 'https://cdn.test/hls/new2.m3u8?sign=rotated',
+      },
+    ];
+    final before = episodeIdentityFromMap(oldEpisodes[1], oldEpisodes);
+    final after = episodeIdentityFromMap(refreshed[1], refreshed);
+    expect(before, 'title:第2集');
+    expect(after, before, reason: '媒体地址轮换后关联键必须保持不变');
+    expect(isVolatileMediaUrl('https://x/a.m3u8?sign=1'), isTrue);
+    expect(isVolatileMediaUrl('https://site/episode/2'), isFalse);
+  });
+
+  test('R5：媒体地址 + 重复标题时无法确认身份', () {
+    final episodes = [
+      {'id': 'ep_1', 'title': '第1集', 'pageUrl': 'https://cdn/a.m3u8'},
+      {'id': 'ep_2', 'title': '第1集', 'pageUrl': 'https://cdn/b.m3u8'},
+    ];
+    expect(episodeIdentityFromMap(episodes[1], episodes), isNull);
+  });
 }

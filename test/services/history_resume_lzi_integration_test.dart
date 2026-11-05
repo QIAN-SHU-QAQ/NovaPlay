@@ -3,10 +3,14 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nova_play/core/utils/episode_identity.dart';
 import 'package:nova_play/core/utils/history_resume.dart';
 import 'package:nova_play/models/history_item.dart';
+import 'package:nova_play/models/video_model.dart';
+import 'package:nova_play/services/database_service.dart';
 import 'package:nova_play/services/scraper/lziapi_scraper.dart';
 import 'package:nova_play/services/scraper/source_config.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// 用真实 LziApiScraper + 本地 HTTP 替身验证：解析器按位置生成 ep_N，
 /// 刷新重排后 ep_N 会指向别的剧集，续播必须按页面 URL/唯一标题定位。
@@ -114,5 +118,84 @@ void main() {
       fetchDetail: () => scraper.getDetail('42'),
     );
     expect(target, isNull);
+  });
+
+  test('R5：真实源媒体地址轮换并重启后，手动弹幕关联仍保留', () async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    addTearDown(db.resetForTest);
+
+    List<Map<String, String>> episodeMaps(VideoModel detail) {
+      return detail.episodes!
+          .map(
+            (e) => {
+              'id': e.id,
+              'title': e.title,
+              'url': e.playUrl ?? e.url,
+              'pageUrl': e.url,
+            },
+          )
+          .toList();
+    }
+
+    // 第一次解析：LziApi 的 EpisodeModel.url 就是媒体地址（old2.m3u8）。
+    playlist =
+        '第1集\$https://cdn.test/hls/old1.m3u8#第2集\$https://cdn.test/hls/old2.m3u8';
+    final first = await scraper.getDetail('42');
+    final firstMaps = episodeMaps(first);
+    final identity = episodeIdentityFromMap(firstMaps[1], firstMaps);
+    expect(identity, isNotNull);
+    expect(identity, contains('第2集'), reason: '易失媒体地址不能作为身份，应使用唯一标题');
+
+    final mappingKey = DatabaseService.danmakuMappingEntryKey(
+      first.id,
+      identity!,
+    );
+    await db.setDanmakuMapping(mappingKey, {
+      'episodeId': 222,
+      'animeTitle': 'QA Sample',
+      'episodeTitle': '第2话',
+    });
+
+    // 模拟进程重启（prefs 保留）。
+    db.resetForTest();
+    await db.init();
+    expect(db.getDanmakuMapping(mappingKey)?['episodeId'], 222);
+
+    // 源刷新：媒体地址轮换（old→new），列表位置/标题不变。
+    playlist =
+        '第1集\$https://cdn.test/hls/new1.m3u8#第2集\$https://cdn.test/hls/new2.m3u8';
+    final refreshed = await scraper.getDetail('42');
+    final newMaps = episodeMaps(refreshed);
+    final newIdentity = episodeIdentityFromMap(newMaps[1], newMaps);
+    expect(newIdentity, identity, reason: '地址轮换后关联键必须不变');
+
+    final newKey = DatabaseService.danmakuMappingEntryKey(
+      refreshed.id,
+      newIdentity!,
+    );
+    expect(newKey, mappingKey);
+    expect(
+      db.getDanmakuMapping(newKey)?['episodeId'],
+      222,
+      reason: '重启 + 地址轮换后仍应读到手选关联',
+    );
+
+    // 续播本身也应拿到新地址。
+    final history = HistoryItem(
+      videoId: first.id,
+      title: first.title,
+      episodes: first.episodes!,
+      episodeIndex: 1,
+      position: const Duration(minutes: 10),
+      watchedAt: DateTime(2026, 11, 5, 10),
+    );
+    final target = await resolveHistoryResumeTarget(
+      history,
+      fetchDetail: () => scraper.getDetail('42'),
+    );
+    expect(target, isNotNull);
+    expect(target!.videoUrl, 'https://cdn.test/hls/new2.m3u8');
   });
 }
