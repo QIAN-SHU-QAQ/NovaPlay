@@ -45,6 +45,9 @@ class M3u8Segment {
 }
 
 /// 解析结果：要么是 master（有 variants），要么是 media（有 segments）。
+///
+/// R3 支持范围标记：下载器只接受经过验证的「未加密、完整 TS VOD」清单；
+/// 下列标记用于在下载前明确拒绝不支持的格式，而不是下载出错误文件后报告成功。
 class M3u8Playlist {
   final String url;
   final List<M3u8Variant> variants;
@@ -52,18 +55,41 @@ class M3u8Playlist {
   final double totalDuration;
   final String? encryptionMethod;
 
+  /// 含 `#EXT-X-MAP`（fMP4 初始化段），当前不支持。
+  final bool hasFmp4Init;
+
+  /// 分片使用 `#EXT-X-BYTERANGE`，当前不支持。
+  final bool hasByteRange;
+
+  /// 含独立音频轨（`#EXT-X-MEDIA:TYPE=AUDIO`），直接拼接会造成丢失音频。
+  final bool hasAlternateAudio;
+
+  /// 含 `#EXT-X-ENDLIST`，表示点播列表结束。
+  final bool hasEndList;
+
+  /// 含 `#EXT-X-DISCONTINUITY`。
+  final bool hasDiscontinuity;
+
   const M3u8Playlist({
     required this.url,
     this.variants = const [],
     this.segments = const [],
     this.totalDuration = 0,
     this.encryptionMethod,
+    this.hasFmp4Init = false,
+    this.hasByteRange = false,
+    this.hasAlternateAudio = false,
+    this.hasEndList = false,
+    this.hasDiscontinuity = false,
   });
 
   bool get isMaster => variants.isNotEmpty;
 
   bool get isEncrypted =>
       encryptionMethod != null && encryptionMethod!.toUpperCase() != 'NONE';
+
+  /// 没有 ENDLIST 且包含分片：视为直播/滚动列表，当前不支持下载。
+  bool get isLive => segments.isNotEmpty && !hasEndList;
 }
 
 class M3u8Parser {
@@ -81,6 +107,11 @@ class M3u8Parser {
     final segments = <M3u8Segment>[];
     double totalDuration = 0;
     String? encryption;
+    var hasFmp4Init = false;
+    var hasByteRange = false;
+    var hasAlternateAudio = false;
+    var hasEndList = false;
+    var hasDiscontinuity = false;
 
     int? pendingBandwidth;
     String? pendingResolution;
@@ -113,6 +144,34 @@ class M3u8Parser {
         if (method != null && method.toUpperCase() != 'NONE') {
           encryption = method.toUpperCase();
         }
+        continue;
+      }
+
+      // R3：显式识别当前下载器不支持的格式标记，下载前即可拒绝。
+      if (line.startsWith('#EXT-X-MAP:')) {
+        hasFmp4Init = true;
+        continue;
+      }
+      if (line.startsWith('#EXT-X-BYTERANGE:')) {
+        hasByteRange = true;
+        continue;
+      }
+      if (line.startsWith('#EXT-X-MEDIA:')) {
+        final attrs = _parseAttributes(line.substring('#EXT-X-MEDIA:'.length));
+        // 只有带 URI 的 AUDIO rendition 才需要额外获取音轨；RFC 8216 允许
+        // AUDIO 无 URI，此时音频内嵌在引用它的视频 rendition 中。
+        if ((attrs['TYPE'] ?? '').toUpperCase() == 'AUDIO' &&
+            (attrs['URI'] ?? '').trim().isNotEmpty) {
+          hasAlternateAudio = true;
+        }
+        continue;
+      }
+      if (line.startsWith('#EXT-X-ENDLIST')) {
+        hasEndList = true;
+        continue;
+      }
+      if (line.startsWith('#EXT-X-DISCONTINUITY')) {
+        hasDiscontinuity = true;
         continue;
       }
 
@@ -149,6 +208,11 @@ class M3u8Parser {
       segments: List.unmodifiable(segments),
       totalDuration: totalDuration,
       encryptionMethod: encryption,
+      hasFmp4Init: hasFmp4Init,
+      hasByteRange: hasByteRange,
+      hasAlternateAudio: hasAlternateAudio,
+      hasEndList: hasEndList,
+      hasDiscontinuity: hasDiscontinuity,
     );
   }
 

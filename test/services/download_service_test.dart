@@ -75,6 +75,7 @@ void main() {
 s0.ts
 #EXTINF:4,
 s1.ts
+#EXT-X-ENDLIST
 ''';
 
   setUp(() async {
