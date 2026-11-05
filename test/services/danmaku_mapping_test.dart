@@ -80,6 +80,7 @@ void main() {
         receivedOps.addAll(ops);
         return const <String>[];
       },
+      validatePayload: (payload) async => db.validateRemotePayload(payload),
       endpointFile: endpoint,
     );
     addTearDown(() async {
