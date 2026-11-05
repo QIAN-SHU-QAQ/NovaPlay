@@ -158,7 +158,10 @@ class M3u8Parser {
       }
       if (line.startsWith('#EXT-X-MEDIA:')) {
         final attrs = _parseAttributes(line.substring('#EXT-X-MEDIA:'.length));
-        if ((attrs['TYPE'] ?? '').toUpperCase() == 'AUDIO') {
+        // 只有带 URI 的 AUDIO rendition 才需要额外获取音轨；RFC 8216 允许
+        // AUDIO 无 URI，此时音频内嵌在引用它的视频 rendition 中。
+        if ((attrs['TYPE'] ?? '').toUpperCase() == 'AUDIO' &&
+            (attrs['URI'] ?? '').trim().isNotEmpty) {
           hasAlternateAudio = true;
         }
         continue;

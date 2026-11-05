@@ -50,6 +50,8 @@ class _SegmentEntry {
     required this.duration,
     this.size,
     this.sha256,
+    this.etag,
+    this.lastModified,
   });
 
   final int index;
@@ -57,6 +59,8 @@ class _SegmentEntry {
   final double duration;
   int? size;
   String? sha256;
+  String? etag;
+  String? lastModified;
 
   Map<String, dynamic> toJson() => {
     'index': index,
@@ -64,6 +68,8 @@ class _SegmentEntry {
     'duration': duration,
     'size': size,
     'sha256': sha256,
+    'etag': etag,
+    'lastModified': lastModified,
   };
 
   static _SegmentEntry? fromJson(Object? raw) {
@@ -77,15 +83,33 @@ class _SegmentEntry {
       duration: (raw['duration'] as num?)?.toDouble() ?? 0,
       size: (raw['size'] as num?)?.toInt(),
       sha256: raw['sha256'] as String?,
+      etag: raw['etag'] as String?,
+      lastModified: raw['lastModified'] as String?,
     );
   }
 }
 
+/// 下载单个分片后得到的完整性/校验信息。
+class _SegmentMeta {
+  const _SegmentMeta({
+    required this.size,
+    required this.sha256,
+    this.etag,
+    this.lastModified,
+  });
+
+  final int size;
+  final String sha256;
+  final String? etag;
+  final String? lastModified;
+}
+
 /// 下载清单指纹与分片元数据。
 ///
-/// 断点续传时只有「清单指纹一致 + 分片 URI 一致 + 本地文件大小/哈希一致」
-/// 才允许复用；清单变化（重排、URI 变化）会清空缓存重新下载；清单过期
-/// （超过 [_SegmentManifest] 允许的复用时限）也会重新下载，避免复用陈旧内容。
+/// 断点续传时只有「清单指纹一致 + 分片 URI 一致 + 本地文件完整」**且**
+/// 通过远端验证（ETag/Last-Modified 条件请求返回 304，或 200 响应已覆盖）
+/// 才允许复用。没有远端验证信息时一律重新下载，避免同一 URI 的远端内容
+/// 已经变化却继续拼旧分片。
 class _SegmentManifest {
   _SegmentManifest({
     required this.playlistUrl,
@@ -99,7 +123,7 @@ class _SegmentManifest {
   final DateTime generatedAt;
   final List<_SegmentEntry> segments;
 
-  static const int version = 1;
+  static const int version = 2;
 
   Map<String, dynamic> toJson() => {
     'version': version,
@@ -165,31 +189,24 @@ class _SegmentManifest {
 /// - 加密流、fMP4、BYTERANGE、独立音轨、直播列表等不支持格式在下载主体前
 ///   显式抛错，不会报告成功。
 class M3u8Downloader {
-  M3u8Downloader({
-    Dio? dio,
-    this.concurrency = 4,
-    this.maxRetries = 3,
-    this.reuseWindow = const Duration(minutes: 30),
-  }) : _dio =
-           dio ??
-           Dio(
-             BaseOptions(
-               connectTimeout: const Duration(seconds: 20),
-               receiveTimeout: const Duration(seconds: 60),
-               headers: const {
-                 'User-Agent':
-                     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                     '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-               },
-             ),
-           );
+  M3u8Downloader({Dio? dio, this.concurrency = 4, this.maxRetries = 3})
+    : _dio =
+          dio ??
+          Dio(
+            BaseOptions(
+              connectTimeout: const Duration(seconds: 20),
+              receiveTimeout: const Duration(seconds: 60),
+              headers: const {
+                'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              },
+            ),
+          );
 
   final Dio _dio;
   final int concurrency;
   final int maxRetries;
-
-  /// 清单超过该时长后不再复用旧分片（重新下载），避免复用可能变化的远端内容。
-  final Duration reuseWindow;
 
   /// 同一 savePath 的下载串行化：暂停后立刻继续时，新任务等待旧任务
   /// 完成清单落盘，避免两个任务同时改写分片目录。
@@ -302,15 +319,22 @@ class M3u8Downloader {
           final file = File(
             '${segmentsDir.path}${Platform.pathSeparator}${_segmentName(index)}',
           );
-          if (!await _canReuseSegment(entry, file)) {
+          final reusable = await _tryRevalidateSegment(
+            entry,
+            file,
+            cancelToken,
+          );
+          if (!reusable) {
             if (await file.exists()) await file.delete();
             final part = File('${file.path}.part');
             if (await part.exists()) await part.delete();
-            await _downloadSegment(entry.url, part, cancelToken);
+            final meta = await _downloadSegment(entry.url, part, cancelToken);
             if (cancelToken?.isCancelled ?? false) return;
             await part.rename(file.path);
-            entry.size = await file.length();
-            entry.sha256 = await _hashFile(file);
+            entry.size = meta.size;
+            entry.sha256 = meta.sha256;
+            entry.etag = meta.etag;
+            entry.lastModified = meta.lastModified;
           }
           completed++;
           report(M3u8DownloadPhase.downloading);
@@ -380,10 +404,6 @@ class M3u8Downloader {
       debugPrint('下载清单已变化，重新下载分片');
       return null;
     }
-    if (DateTime.now().difference(existing.generatedAt) > reuseWindow) {
-      debugPrint('下载清单超过复用时限，重新下载分片');
-      return null;
-    }
     if (existing.segments.length != media.segments.length) return null;
     for (var i = 0; i < media.segments.length; i++) {
       final entry = existing.segments[i];
@@ -397,11 +417,59 @@ class M3u8Downloader {
     return existing;
   }
 
-  Future<bool> _canReuseSegment(_SegmentEntry entry, File file) async {
+  /// 远端校验后才允许复用缓存分片。
+  ///
+  /// - 没有 ETag/Last-Modified 等远端验证信息：返回 false（重新下载）；
+  /// - 条件请求返回 304 且本地哈希一致：复用；
+  /// - 返回 200：远端内容可能已变化，用响应覆盖本地分片后视为已更新；
+  /// - 其他状态/异常：返回 false，由调用方重新下载。
+  Future<bool> _tryRevalidateSegment(
+    _SegmentEntry entry,
+    File file,
+    CancelToken? cancelToken,
+  ) async {
     if (entry.size == null || entry.sha256 == null) return false;
+    if (entry.etag == null && entry.lastModified == null) return false;
     if (!await file.exists()) return false;
     if (await file.length() != entry.size) return false;
-    return await _hashFile(file) == entry.sha256;
+    if (await _hashFile(file) != entry.sha256) return false;
+
+    final headers = <String, String>{
+      if (entry.etag != null) 'If-None-Match': entry.etag!,
+      if (entry.lastModified != null) 'If-Modified-Since': entry.lastModified!,
+    };
+    try {
+      final response = await _dio.get<List<int>>(
+        entry.url,
+        cancelToken: cancelToken,
+        options: Options(
+          responseType: ResponseType.bytes,
+          headers: headers,
+          validateStatus: (_) => true,
+        ),
+      );
+      if (response.statusCode == 304) {
+        return true;
+      }
+      final bytes = response.data;
+      if (response.statusCode == 200 && bytes != null && bytes.isNotEmpty) {
+        // 远端内容已变化/未支持条件请求：用这次响应覆盖，避免继续用旧分片。
+        final part = File('${file.path}.part');
+        if (await part.exists()) await part.delete();
+        await part.writeAsBytes(bytes, flush: true);
+        await part.rename(file.path);
+        entry.size = bytes.length;
+        entry.sha256 = sha256.convert(bytes).toString();
+        entry.etag = response.headers.value('etag');
+        entry.lastModified = response.headers.value('last-modified');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      if (cancelToken?.isCancelled ?? false) return false;
+      debugPrint('分片远端校验失败，重新下载: $e');
+      return false;
+    }
   }
 
   Future<String> _hashFile(File file) async {
@@ -493,7 +561,7 @@ class M3u8Downloader {
     }
   }
 
-  Future<void> _downloadSegment(
+  Future<_SegmentMeta> _downloadSegment(
     String url,
     File file,
     CancelToken? cancelToken,
@@ -511,10 +579,20 @@ class M3u8Downloader {
           throw M3u8FormatException('分片为空：$url');
         }
         await file.writeAsBytes(bytes, flush: true);
-        return;
+        return _SegmentMeta(
+          size: bytes.length,
+          sha256: sha256.convert(bytes).toString(),
+          etag: response.headers.value('etag'),
+          lastModified: response.headers.value('last-modified'),
+        );
       } catch (e) {
         lastError = e;
-        if (cancelToken?.isCancelled ?? false) return;
+        if (cancelToken?.isCancelled ?? false) {
+          throw DioException.requestCancelled(
+            requestOptions: RequestOptions(path: url),
+            reason: '已取消',
+          );
+        }
         if (attempt < maxRetries) {
           await Future<void>.delayed(Duration(milliseconds: 300 * attempt));
         }

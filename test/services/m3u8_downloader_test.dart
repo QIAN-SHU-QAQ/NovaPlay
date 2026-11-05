@@ -7,12 +7,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nova_play/services/m3u8/m3u8_downloader.dart';
 import 'package:nova_play/services/m3u8/m3u8_parser.dart';
 
-/// 内存版 HTTP 适配器：按 URL 返回预设内容，并记录请求。
+/// 内存版 HTTP 适配器：按 URL 返回预设内容，支持 ETag/304 与请求头记录。
 class _FakeAdapter implements HttpClientAdapter {
   _FakeAdapter(this.responses);
 
   final Map<String, List<int>> responses;
+  final Map<String, String> etags = {};
   final List<String> requests = [];
+  final List<RequestOptions> requestOptions = [];
 
   @override
   Future<ResponseBody> fetch(
@@ -22,20 +24,26 @@ class _FakeAdapter implements HttpClientAdapter {
   ) async {
     final url = options.uri.toString();
     requests.add(url);
+    requestOptions.add(options);
+
+    final etag = etags[url];
+    if (etag != null && options.headers['If-None-Match'] == etag) {
+      return ResponseBody.fromBytes([], 304);
+    }
+
     final data = responses[url];
     if (data == null) {
-      return ResponseBody.fromString('not found', 404);
+      return ResponseBody.fromString('not found', 503);
     }
+    final headers = <String, List<String>>{
+      if (etag != null) 'etag': [etag],
+      if (options.responseType == ResponseType.plain)
+        Headers.contentTypeHeader: [Headers.textPlainContentType],
+    };
     if (options.responseType == ResponseType.plain) {
-      return ResponseBody.fromString(
-        utf8.decode(data),
-        200,
-        headers: {
-          Headers.contentTypeHeader: [Headers.textPlainContentType],
-        },
-      );
+      return ResponseBody.fromString(utf8.decode(data), 200, headers: headers);
     }
-    return ResponseBody.fromBytes(data, 200);
+    return ResponseBody.fromBytes(data, 200, headers: headers);
   }
 
   @override
@@ -73,6 +81,9 @@ void main() {
       dio: Dio()..httpClientAdapter = adapter,
       concurrency: 2,
     );
+    adapter.etags['https://cdn.test/hls/s0.ts'] = '"s0-v1"';
+    adapter.etags['https://cdn.test/hls/s1.ts'] = '"s1-v1"';
+    adapter.etags['https://cdn.test/hls/s2.ts'] = '"s2-v1"';
   });
 
   tearDown(() {
@@ -112,9 +123,10 @@ void main() {
     );
     expect(File('$savePath.segments/seg_000000.ts').existsSync(), isTrue);
 
-    // 恢复 s1 后重跑：s0 校验通过应复用，不重复请求。
+    // 恢复 s1 后重跑：s0 必须先通过条件请求确认远端未变化（304）才复用。
     adapter.responses[s1Url] = savedS1!;
     adapter.requests.clear();
+    adapter.requestOptions.clear();
     final result = await downloader.download(
       url: playlistUrl,
       savePath: savePath,
@@ -122,11 +134,12 @@ void main() {
 
     expect(result.segmentCount, 3);
     expect(File(savePath).readAsBytesSync(), [1, 2, 3, 4, 5, 6]);
-    expect(
-      adapter.requests.where((u) => u.endsWith('s0.ts')),
-      isEmpty,
-      reason: '完整且哈希一致的分片不应重复下载',
-    );
+    final s0Requests =
+        adapter.requestOptions
+            .where((options) => options.uri.toString().endsWith('s0.ts'))
+            .toList();
+    expect(s0Requests, hasLength(1), reason: '复用前必须做一次远端校验');
+    expect(s0Requests.single.headers['If-None-Match'], '"s0-v1"');
   });
 
   test('R2：缓存分片被截断时不复用，重新下载后产物正确', () async {
@@ -152,6 +165,61 @@ void main() {
       1,
       reason: '截断文件必须重新下载',
     );
+  });
+
+  test('P1：无远端验证信息时，同 URI 内容变化必须重新下载', () async {
+    const localPlaylistUrl = 'https://cdn.test/hls/local.m3u8';
+    final localAdapter = _FakeAdapter({
+      localPlaylistUrl: utf8.encode(_playlist(['a0.ts', 'a1.ts'])),
+      'https://cdn.test/hls/a0.ts': [9],
+    });
+    final localDownloader = M3u8Downloader(
+      dio: Dio()..httpClientAdapter = localAdapter,
+      concurrency: 1,
+      maxRetries: 1,
+    );
+    final savePath = '${tempDir.path}/no-validator.ts';
+
+    // 第一次：a0 下载为 [9]，a1 服务端错误导致失败。
+    await expectLater(
+      localDownloader.download(url: localPlaylistUrl, savePath: savePath),
+      throwsA(isA<M3u8FormatException>()),
+    );
+    expect(File('$savePath.segments/seg_000000.ts').readAsBytesSync(), [9]);
+
+    // 远端把 a0/a1 的内容都换掉，但 URL、清单和时长不变，且没有 ETag。
+    localAdapter.responses['https://cdn.test/hls/a0.ts'] = [1];
+    localAdapter.responses['https://cdn.test/hls/a1.ts'] = [2];
+    localAdapter.requests.clear();
+    await localDownloader.download(url: localPlaylistUrl, savePath: savePath);
+
+    // 没有可靠远端验证信息时不能复用旧分片，必须得到 [1,2]。
+    expect(File(savePath).readAsBytesSync(), [1, 2]);
+    expect(
+      localAdapter.requests.where((u) => u.endsWith('a0.ts')).length,
+      1,
+      reason: '无验证信息必须重新请求 a0',
+    );
+  });
+
+  test('P2：无 URI 的 AUDIO rendition 不应拒绝合法 TS 主列表', () async {
+    const masterUrl = 'https://cdn.test/hls/embedded-audio.m3u8';
+    adapter.responses[masterUrl] = utf8.encode('''
+#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a1",NAME="audio"
+#EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO="a1"
+v/index.m3u8
+''');
+    adapter.responses['https://cdn.test/hls/v/index.m3u8'] = utf8.encode(
+      _playlist(['v0.ts', 'v1.ts']),
+    );
+    adapter.responses['https://cdn.test/hls/v/v0.ts'] = [7];
+    adapter.responses['https://cdn.test/hls/v/v1.ts'] = [8];
+
+    final savePath = '${tempDir.path}/embedded-audio.ts';
+    await downloader.download(url: masterUrl, savePath: savePath);
+
+    expect(File(savePath).readAsBytesSync(), [7, 8]);
   });
 
   test('R2：旧清单遗留的分片不会被混入新下载', () async {
