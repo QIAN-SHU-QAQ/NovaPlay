@@ -207,14 +207,22 @@ class DandanplayClient {
     required int episodeIndex,
   }) async {
     final number = extractEpisodeNumber(episodeTitle) ?? (episodeIndex + 1);
+    final season = extractSeason(animeTitle);
 
     var matches = await searchEpisodes(anime: animeTitle, episode: '$number');
     if (matches.isEmpty) {
       matches = await searchEpisodes(anime: animeTitle);
     }
+    if (matches.isEmpty) {
+      // 带季数标记的标题可能搜不到，退化为去掉季数后的作品名。
+      matches = await searchEpisodes(
+        anime: normalizeDanmakuTitle(animeTitle),
+        episode: '$number',
+      );
+    }
     if (matches.isEmpty) return null;
 
-    final best = pickBestMatch(matches, animeTitle, number);
+    final best = pickBestMatch(matches, animeTitle, number, season: season);
     if (best == null) return null;
 
     final comments = await fetchComments(best.episodeId);
@@ -271,6 +279,50 @@ int? extractEpisodeNumber(String title) {
   return null;
 }
 
+/// 提取标题里的季数（「第 3 季」「Season 2」「2nd Season」「S2」），无季数返回 null。
+int? extractSeason(String input) {
+  final normalized = input.replaceAllMapped(
+    RegExp(r'[\uFF10-\uFF19]'),
+    (match) => String.fromCharCode(match.group(0)!.codeUnitAt(0) - 0xFEE0),
+  );
+  final patterns = <RegExp>[
+    RegExp(r'第\s*([0-9一二三四五六七八九十]+)\s*[季期部]'),
+    RegExp(r'season\s*([0-9]{1,2})', caseSensitive: false),
+    RegExp(r'([0-9]{1,2})(?:st|nd|rd|th)\s*season', caseSensitive: false),
+    RegExp(r'[Ss]([0-9]{1,2})(?![0-9])'),
+  ];
+  for (final pattern in patterns) {
+    final match = pattern.firstMatch(normalized);
+    if (match == null) continue;
+    final raw = match.group(1)!;
+    final value = int.tryParse(raw) ?? _parseChineseNumber(raw);
+    if (value != null && value > 0) return value;
+  }
+  return null;
+}
+
+int? _parseChineseNumber(String text) {
+  const digits = {
+    '一': 1,
+    '二': 2,
+    '三': 3,
+    '四': 4,
+    '五': 5,
+    '六': 6,
+    '七': 7,
+    '八': 8,
+    '九': 9,
+  };
+  if (text.isEmpty) return null;
+  final tenIndex = text.indexOf('十');
+  if (tenIndex < 0) return digits[text];
+  final tensText = text.substring(0, tenIndex);
+  final onesText = text.substring(tenIndex + 1);
+  final tens = tensText.isEmpty ? 1 : (digits[tensText] ?? 0);
+  final ones = onesText.isEmpty ? 0 : (digits[onesText] ?? 0);
+  return tens * 10 + ones;
+}
+
 /// 标题相似度（0-1），用于从搜索结果里挑选最匹配的作品。
 double titleSimilarity(String a, String b) {
   final left = normalizeDanmakuTitle(a);
@@ -292,31 +344,55 @@ Set<String> _bigrams(String value) {
   return {for (var i = 0; i < value.length - 1; i++) value.substring(i, i + 2)};
 }
 
-/// 从候选剧集里挑最匹配的一集：作品名相似度优先，集数差距作为次要修正。
+/// 从候选剧集里挑最匹配的一集。
+///
+/// 规则（R5）：
+/// - 作品名相似度低于 [minSimilarity] 的候选直接丢弃；全部不达标时返回 null，
+///   不再把无关作品当成本集弹幕；
+/// - 双方都能解析出季数且季数不同时直接排除（第二季不能匹配第一季）；
+/// - 只有一方能解析季数时轻微降权，相似度仍然优先；
+/// - 集数差距作为次要修正。
 DanmakuEpisodeMatch? pickBestMatch(
   List<DanmakuEpisodeMatch> matches,
   String animeTitle,
-  int episodeNumber,
-) {
+  int episodeNumber, {
+  int? season,
+  double minSimilarity = 0.45,
+}) {
   if (matches.isEmpty) return null;
 
+  final querySeason = season ?? extractSeason(animeTitle);
   DanmakuEpisodeMatch? best;
   var bestScore = double.negativeInfinity;
   for (final match in matches) {
     final similarity = titleSimilarity(animeTitle, match.animeTitle);
+    if (similarity < minSimilarity) continue;
+
+    final candidateSeason = extractSeason(match.animeTitle);
+    if (querySeason != null &&
+        candidateSeason != null &&
+        candidateSeason != querySeason) {
+      continue;
+    }
+    final seasonPenalty =
+        (querySeason == null) != (candidateSeason == null) ? 0.15 : 0.0;
+
     final candidateNumber =
         extractEpisodeNumber(match.episodeTitle) ??
         int.tryParse(match.episodeNumber ?? '');
     final distance =
         candidateNumber == null ? 0 : (candidateNumber - episodeNumber).abs();
-    final score = similarity * 10 - (distance > 2 ? 3 : distance * 0.5);
+    final score =
+        similarity * 10 -
+        seasonPenalty * 10 -
+        (distance > 2 ? 3 : distance * 0.5);
     if (score > bestScore) {
       bestScore = score;
       best = match;
     }
   }
   debugPrint(
-    '弹幕匹配：$animeTitle 第$episodeNumber集 → '
+    '弹幕匹配：$animeTitle 第$episodeNumber集 (季数=$querySeason) → '
     '${best?.animeTitle} ${best?.episodeTitle} (episodeId=${best?.episodeId})',
   );
   return best;

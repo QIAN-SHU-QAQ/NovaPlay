@@ -22,6 +22,8 @@ class DatabaseService {
   static const String _favoritesKey = 'favorites_v1';
   static const String _historyKey = 'history_v1';
   static const String _searchHistoryKey = 'search_history';
+  static const String _danmakuMappingKey = 'danmaku_episode_map_v1';
+  static const String _bangumiMappingKey = 'bangumi_subject_map_v1';
   static const String _sourcesKey = 'sources_v1';
   static const String _activeSourceKey = 'active_source_v1';
 
@@ -72,6 +74,11 @@ class DatabaseService {
 
   @visibleForTesting
   void setJournalDirectory(Directory? dir) => _journalDir = dir;
+
+  /// 播放器进程内已确认/已提交的弹幕映射（含删除哨兵 null）。
+  ///
+  /// 通过配置桥写入后本进程立即读取到一致结果；主进程仍是唯一落盘方。
+  final Map<String, Map<String, dynamic>?> _danmakuMappingCache = {};
 
   /// 主进程应用远程写入（标量设置）。
   Future<void> applyRemoteSet(String key, Object? value) async {
@@ -145,6 +152,19 @@ class DatabaseService {
       case 'search.clear':
         await _enqueueWrite(_clearSearchHistoryLocal);
         return _searchHistoryKey;
+      case 'danmaku.map.set':
+        final key = op['key'];
+        final value = op['value'];
+        if (key is! String || value is! Map) return null;
+        await _enqueueWrite(
+          () => _setDanmakuMappingLocal(key, value.cast<String, dynamic>()),
+        );
+        return _danmakuMappingKey;
+      case 'danmaku.map.remove':
+        final key = op['key'];
+        if (key is! String) return null;
+        await _enqueueWrite(() => _removeDanmakuMappingLocal(key));
+        return _danmakuMappingKey;
       case 'set':
         final key = op['key'];
         if (key is! String) return null;
@@ -308,6 +328,7 @@ class DatabaseService {
   void resetForTest() {
     detachBridge();
     _pendingOps.clear();
+    _danmakuMappingCache.clear();
     _prefs = null;
     _writeChain = Future<void>.value();
     _writeZone = null;
@@ -518,6 +539,130 @@ class DatabaseService {
 
   Future<void> _clearHistoryLocal() async {
     await _store?.remove(_historyKey);
+  }
+
+  // 弹幕手动匹配映射：作品 ID + 稳定剧集身份 → 弹弹play 剧集（重启后仍生效）
+  static String danmakuMappingEntryKey(String videoId, String episodeId) =>
+      '$videoId||$episodeId';
+
+  Map<String, dynamic>? getDanmakuMapping(String entryKey) {
+    if (_danmakuMappingCache.containsKey(entryKey)) {
+      return _danmakuMappingCache[entryKey];
+    }
+    final raw = _store?.getString(_danmakuMappingKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      final value = decoded[entryKey];
+      return value is Map ? value.cast<String, dynamic>() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> setDanmakuMapping(
+    String entryKey,
+    Map<String, dynamic> value,
+  ) async {
+    // 先更新本进程缓存：播放器选择后立刻重新加载弹幕时能读到新关联。
+    _danmakuMappingCache[entryKey] = value;
+    if (_bridge != null) {
+      await _enqueueWrite(
+        () => _dispatchOp({
+          'op': 'danmaku.map.set',
+          'key': entryKey,
+          'value': value,
+        }),
+      );
+      return;
+    }
+    await _enqueueWrite(() => _setDanmakuMappingLocal(entryKey, value));
+  }
+
+  Future<void> removeDanmakuMapping(String entryKey) async {
+    // null 哨兵：清除后本进程立即读不到旧关联，即使启动时的 prefs 快照里还有。
+    _danmakuMappingCache[entryKey] = null;
+    if (_bridge != null) {
+      await _enqueueWrite(
+        () => _dispatchOp({'op': 'danmaku.map.remove', 'key': entryKey}),
+      );
+      return;
+    }
+    await _enqueueWrite(() => _removeDanmakuMappingLocal(entryKey));
+  }
+
+  Map<String, dynamic> _loadDanmakuMappings() {
+    final raw = _store?.getString(_danmakuMappingKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) return decoded.cast<String, dynamic>();
+    } catch (_) {}
+    return {};
+  }
+
+  Future<void> _setDanmakuMappingLocal(
+    String entryKey,
+    Map<String, dynamic> value,
+  ) async {
+    final mappings = _loadDanmakuMappings();
+    mappings[entryKey] = value;
+    await _store?.setString(_danmakuMappingKey, jsonEncode(mappings));
+  }
+
+  Future<void> _removeDanmakuMappingLocal(String entryKey) async {
+    final mappings = _loadDanmakuMappings();
+    if (!mappings.containsKey(entryKey)) return;
+    mappings.remove(entryKey);
+    await _store?.setString(_danmakuMappingKey, jsonEncode(mappings));
+  }
+
+  // Bangumi 手动纠正映射：完整视频 ID → subjectId（详情页使用，本地持久化）
+  //
+  // 不使用标题作为键：同名旧作/重制版会共用关联。旧版本（未发布）若留下
+  // 标题键数据，这里也不会回退读取，避免把一部作品的关联套到另一部。
+  Map<String, dynamic>? getBangumiMapping(String videoId) {
+    final raw = _store?.getString(_bangumiMappingKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      final value = decoded[videoId];
+      return value is Map ? value.cast<String, dynamic>() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> setBangumiMapping(
+    String videoId,
+    Map<String, dynamic> value,
+  ) async {
+    await _enqueueWrite(() async {
+      final mappings = _loadBangumiMappings();
+      mappings[videoId] = value;
+      await _store?.setString(_bangumiMappingKey, jsonEncode(mappings));
+    });
+  }
+
+  Future<void> removeBangumiMapping(String videoId) async {
+    await _enqueueWrite(() async {
+      final mappings = _loadBangumiMappings();
+      if (!mappings.containsKey(videoId)) return;
+      mappings.remove(videoId);
+      await _store?.setString(_bangumiMappingKey, jsonEncode(mappings));
+    });
+  }
+
+  Map<String, dynamic> _loadBangumiMappings() {
+    final raw = _store?.getString(_bangumiMappingKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) return decoded.cast<String, dynamic>();
+    } catch (_) {}
+    return {};
   }
 
   // Settings

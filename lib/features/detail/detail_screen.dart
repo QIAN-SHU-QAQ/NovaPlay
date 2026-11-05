@@ -13,6 +13,9 @@ import '../../providers/favorites_provider.dart';
 import '../../providers/history_provider.dart';
 import '../../providers/scraper_provider.dart';
 import '../../providers/video_provider.dart';
+import '../../services/bangumi_api.dart';
+import '../../services/database_service.dart';
+import 'widgets/bangumi_match_dialog.dart';
 
 class DetailScreen extends ConsumerStatefulWidget {
   final String id;
@@ -81,7 +84,14 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
   // ---------- 三栏布局 ----------
 
   Widget _buildThreeColumns(VideoModel video) {
-    final bangumi = ref.watch(bangumiInfoProvider(video.title)).valueOrNull;
+    final bangumi =
+        ref
+            .watch(
+              bangumiInfoProvider(
+                BangumiQuery(videoId: video.id, title: video.title),
+              ),
+            )
+            .valueOrNull;
     final showDataColumn =
         bangumi != null && (bangumi.score != null || bangumi.staff.isNotEmpty);
 
@@ -100,7 +110,8 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                 showPoster: constraints.maxWidth < 600,
               ),
             ),
-            if (wide && showDataColumn) _buildDataColumn(bangumi),
+            if (wide && showDataColumn)
+              _buildDataColumn(bangumi, video.id, video.title),
           ],
         );
       },
@@ -385,7 +396,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
 
   // ---------- 数据列 ----------
 
-  Widget _buildDataColumn(BangumiInfo bangumi) {
+  Widget _buildDataColumn(BangumiInfo bangumi, String videoId, String title) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return SizedBox(
@@ -395,6 +406,14 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => _showBangumiMatchDialog(videoId, title),
+                icon: const Icon(Icons.tune, size: 16),
+                label: const Text('资料不准确？手动匹配'),
+              ),
+            ),
             // 评分卡
             if (bangumi.score != null) ...[
               Card(
@@ -516,6 +535,36 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
         .toList();
   }
 
+  /// R7：手动选择 Bangumi 条目并按完整视频 ID 持久化，避免自动匹配到
+  /// 错误作品/季数，也避免同名不同作品共用一份关联。
+  Future<void> _showBangumiMatchDialog(String videoId, String title) async {
+    final api = ref.read(bangumiApiProvider);
+    final existing = DatabaseService().getBangumiMapping(videoId);
+    final selected = await showDialog<Object?>(
+      context: context,
+      builder:
+          (_) => BangumiMatchDialog(
+            future: api.searchSubjects(title),
+            title: title,
+            hasExistingMapping: existing != null,
+            existingLabel: existing?['name']?.toString(),
+          ),
+    );
+    if (selected == null || !mounted) return;
+    if (selected is String && selected == BangumiMatchDialog.clearValue) {
+      await DatabaseService().removeBangumiMapping(videoId);
+    } else if (selected is BangumiSubjectCandidate) {
+      await DatabaseService().setBangumiMapping(videoId, {
+        'subjectId': selected.subjectId,
+        'name': selected.displayTitle,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+    }
+    ref.invalidate(
+      bangumiInfoProvider(BangumiQuery(videoId: videoId, title: title)),
+    );
+  }
+
   void _playEpisode(VideoModel video, int index) async {
     final episode = video.episodes![index];
 
@@ -616,12 +665,21 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
       title: '${video.title} - ${video.episodes![index].title}',
       episodes:
           video.episodes!
-              .map((e) => {'title': e.title, 'url': e.playUrl ?? e.url})
+              .map(
+                (e) => {
+                  'id': e.id,
+                  'title': e.title,
+                  'url': e.playUrl ?? e.url,
+                  'pageUrl': e.url,
+                  'media': e.urlIsMediaPlayback ? 'true' : 'false',
+                },
+              )
               .toList(),
       currentIndex: index,
       videoId: video.id,
       videoTitle: video.title,
       cover: video.cover,
+      sourceId: video.source,
     );
   }
 }

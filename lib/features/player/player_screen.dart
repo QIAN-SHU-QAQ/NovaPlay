@@ -10,6 +10,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
 
 import '../../core/config/theme.dart';
+import '../../core/utils/episode_identity.dart';
 import '../../core/window/player_window_bridge.dart';
 import '../../models/danmaku_model.dart';
 import '../../models/history_item.dart';
@@ -18,8 +19,10 @@ import '../../providers/danmaku_provider.dart';
 import '../../providers/history_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../services/danmaku/dandanplay_client.dart';
+import '../../services/database_service.dart';
 import 'playback_session.dart';
 import 'fullscreen_session.dart';
+import 'widgets/danmaku_match_dialog.dart';
 import 'widgets/danmaku_overlay.dart';
 
 final playerFactoryProvider = Provider<Player Function()>(
@@ -53,6 +56,9 @@ class PlayerScreen extends ConsumerStatefulWidget {
   final String? videoTitle;
   final String? cover;
 
+  /// 作品来源标识（数据源名称），随历史保存以便续播时确认作品身份。
+  final String? sourceId;
+
   const PlayerScreen({
     super.key,
     required this.videoUrl,
@@ -63,6 +69,7 @@ class PlayerScreen extends ConsumerStatefulWidget {
     this.videoId,
     this.videoTitle,
     this.cover,
+    this.sourceId,
   });
 
   @override
@@ -154,6 +161,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return episodes[index]['title'] ?? '第 ${index + 1} 集';
   }
 
+  /// 当前集的稳定身份（排除位置生成的 ep_N），无法确认时禁用手动关联。
+  String? get _currentEpisodeIdentity {
+    final episodes = widget.episodes;
+    if (episodes == null || episodes.isEmpty) return null;
+    final index = _currentIndex.clamp(0, episodes.length - 1);
+    return episodeIdentityFromMap(episodes[index], episodes);
+  }
+
+  /// 手动匹配的持久化键：作品 + 当前集（稳定身份，列表重排后仍能命中）。
+  String? get _danmakuMappingKey {
+    final videoKey = (widget.videoId ?? '').trim();
+    final episodeKey = _currentEpisodeIdentity;
+    if (videoKey.isEmpty || episodeKey == null) return null;
+    return DatabaseService.danmakuMappingEntryKey(videoKey, episodeKey);
+  }
+
   /// 拉取当前集的弹幕（弹弹play）。切集会重新调用。
   Future<void> _loadDanmaku() async {
     final settings = ref.read(danmakuSettingsProvider);
@@ -182,6 +205,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         appId: settings.appId,
         appSecret: settings.appSecret,
       );
+
+      // 手动匹配优先：同一作品同一集使用用户选定的弹幕库剧集，重启后仍生效。
+      final mappingKey = _danmakuMappingKey;
+      final manualMapping =
+          mappingKey == null
+              ? null
+              : DatabaseService().getDanmakuMapping(mappingKey);
+      final mappedEpisodeId = manualMapping?['episodeId'];
+      if (mappedEpisodeId is int) {
+        final comments = await client.fetchComments(mappedEpisodeId);
+        if (!mounted || requestId != _danmakuRequestId) return;
+        setState(() {
+          _danmakuComments = comments;
+          _danmakuSource =
+              '${manualMapping?['animeTitle'] ?? ''} '
+              '${manualMapping?['episodeTitle'] ?? ''}（手动匹配）';
+          _danmakuLoading = false;
+        });
+        return;
+      }
+
       final result = await client.loadForEpisode(
         animeTitle: animeTitle,
         episodeTitle: _currentEpisodeTitle,
@@ -216,6 +260,56 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         !_danmakuLoading) {
       unawaited(_loadDanmaku());
     }
+  }
+
+  /// 手动选择弹幕库剧集（R5）：搜索候选、保存映射并重新加载。
+  Future<void> _showDanmakuMatchDialog() async {
+    final settings = ref.read(danmakuSettingsProvider);
+    if (!settings.hasCredentials) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先在设置中填写弹弹play AppId/AppSecret')),
+      );
+      return;
+    }
+    final animeTitle = (widget.videoTitle ?? widget.title).trim();
+    final entryKey = _danmakuMappingKey;
+    if (entryKey == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前集缺少稳定剧集标识，无法保存手动匹配')));
+      return;
+    }
+    final existing = DatabaseService().getDanmakuMapping(entryKey);
+    final client = DandanplayClient(
+      appId: settings.appId,
+      appSecret: settings.appSecret,
+    );
+    final selected = await showDialog<Object?>(
+      context: context,
+      builder:
+          (_) => DanmakuMatchDialog(
+            future: client.searchEpisodes(anime: animeTitle),
+            animeTitle: animeTitle,
+            hasExistingMapping: existing != null,
+            existingLabel:
+                existing == null
+                    ? null
+                    : '${existing['animeTitle'] ?? ''} '
+                        '${existing['episodeTitle'] ?? ''}',
+          ),
+    );
+    if (selected == null || !mounted) return;
+    if (selected is String && selected == DanmakuMatchDialog.clearValue) {
+      await DatabaseService().removeDanmakuMapping(entryKey);
+    } else if (selected is DanmakuEpisodeMatch) {
+      await DatabaseService().setDanmakuMapping(entryKey, {
+        'episodeId': selected.episodeId,
+        'animeTitle': selected.animeTitle,
+        'episodeTitle': selected.episodeTitle,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+    }
+    await _loadDanmaku();
   }
 
   Future<void> _configureMpvProperties() async {
@@ -271,11 +365,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             .entries
             .map(
               (e) => EpisodeModel(
-                id: 'ep_${e.key + 1}',
+                // 保存详情页传入的剧集 ID 与原始页面 URL；位置生成的 ep_N
+                // 不作为身份，续播/弹幕关联会用 pageUrl/唯一标题校验。
+                id: e.value['id'] ?? 'ep_${e.key + 1}',
                 title: e.value['title'] ?? '第 ${e.key + 1} 集',
-                url: e.value['url'] ?? '',
+                url: e.value['pageUrl'] ?? e.value['url'] ?? '',
                 index: e.key,
                 playUrl: e.value['url'],
+                urlIsMediaPlayback: e.value['media'] == 'true',
               ),
             )
             .toList();
@@ -299,6 +396,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           videoId: videoId,
           title: widget.videoTitle ?? widget.title,
           cover: widget.cover,
+          sourceId: widget.sourceId,
           episodes: snapshots,
           episodeIndex: _currentIndex,
           position: state.position,
@@ -681,6 +779,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                           : Colors.white.withValues(alpha: 0.55),
                 ),
                 onPressed: _toggleDanmaku,
+              ),
+
+              // 手动匹配弹幕（R5）
+              IconButton(
+                tooltip: '手动匹配弹幕',
+                icon: Icon(
+                  Icons.manage_search_rounded,
+                  color: Colors.white.withValues(alpha: 0.9),
+                ),
+                onPressed:
+                    danmaku.hasCredentials ? _showDanmakuMatchDialog : null,
               ),
 
               const Spacer(),

@@ -5,6 +5,7 @@ import '../../core/utils/play_launcher.dart';
 import '../../models/video_model.dart';
 import '../../providers/favorites_provider.dart';
 import '../../providers/history_provider.dart';
+import '../../providers/scraper_provider.dart';
 import '../../shared/widgets/wide_media_card.dart';
 
 class FavoritesScreen extends ConsumerWidget {
@@ -62,7 +63,14 @@ class FavoritesScreen extends ConsumerWidget {
                             ),
                         onResume: () {
                           if (history != null) {
-                            launchHistoryResume(context, history);
+                            launchHistoryResume(
+                              context,
+                              history,
+                              fetchDetail:
+                                  () => ref
+                                      .read(currentScraperProvider)
+                                      .getDetail(history.videoId),
+                            );
                           } else {
                             context.push(
                               '/detail/${Uri.encodeComponent(video.id)}',

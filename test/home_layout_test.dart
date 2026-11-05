@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +19,7 @@ class LibraryScraper extends FakeScraper {
   final homePages = <int>[];
   bool failHome = false;
   bool empty = false;
+  Completer<VideoModel>? detailCompleter;
 
   List<VideoModel> get videos => List.generate(
     24,
@@ -39,6 +42,26 @@ class LibraryScraper extends FakeScraper {
     String category, {
     int page = 1,
   }) async => videos;
+
+  /// R4：续播会先刷新详情，这里返回与历史快照对应的新剧集地址。
+  @override
+  @override
+  Future<VideoModel> getDetail(String url) async {
+    final completer = detailCompleter;
+    if (completer != null) return completer.future;
+    return VideoModel(
+      id: url,
+      title: '昨日观看',
+      episodes: [
+        EpisodeModel(
+          id: 'ep',
+          title: '第 1 集',
+          url: 'https://fake.local/ep',
+          playUrl: 'https://fake.local/ep-new',
+        ),
+      ],
+    );
+  }
 }
 
 class SeededHistory extends HistoryNotifier {
@@ -47,7 +70,32 @@ class SeededHistory extends HistoryNotifier {
   }
 }
 
-Future<void> pumpHome(
+HistoryItem _savedHistory() => HistoryItem(
+  videoId: 'saved',
+  title: '昨日观看',
+  episodeIndex: 0,
+  position: const Duration(seconds: 125),
+  duration: const Duration(minutes: 24),
+  watchedAt: DateTime(2026),
+  episodes: [
+    EpisodeModel(id: 'ep', title: '第 1 集', url: 'https://fake.local/ep'),
+  ],
+);
+
+VideoModel _refreshedDetail() => VideoModel(
+  id: 'saved',
+  title: '昨日观看',
+  episodes: [
+    EpisodeModel(
+      id: 'ep',
+      title: '第 1 集',
+      url: 'https://fake.local/ep',
+      playUrl: 'https://fake.local/ep-new',
+    ),
+  ],
+);
+
+Future<GoRouter> pumpHome(
   WidgetTester tester,
   LibraryScraper scraper,
   Size size, {
@@ -92,6 +140,7 @@ Future<void> pumpHome(
     ),
   );
   await tester.pumpAndSettle();
+  return router;
 }
 
 void main() {
@@ -146,6 +195,54 @@ void main() {
     await tester.tap(find.text('昨日观看'));
     await tester.pumpAndSettle();
     expect(find.text('续播 saved 125'), findsOneWidget);
+  });
+
+  testWidgets('R4：切换分支后迟到的成功续播不抢走导航', (tester) async {
+    final scraper = LibraryScraper();
+    final router = await pumpHome(
+      tester,
+      scraper,
+      const Size(1120, 720),
+      history: [_savedHistory()],
+    );
+    final completer = Completer<VideoModel>();
+    scraper.detailCompleter = completer;
+
+    await tester.tap(find.text('昨日观看'));
+    await tester.pump();
+    router.push('/search');
+    await tester.pumpAndSettle();
+    expect(find.text('搜索页面'), findsOneWidget);
+
+    completer.complete(_refreshedDetail());
+    await tester.pumpAndSettle();
+
+    expect(find.text('搜索页面'), findsOneWidget);
+    expect(find.textContaining('续播'), findsNothing);
+  });
+
+  testWidgets('R4：切换分支后迟到的失败续播不跳到详情页', (tester) async {
+    final scraper = LibraryScraper();
+    final router = await pumpHome(
+      tester,
+      scraper,
+      const Size(1120, 720),
+      history: [_savedHistory()],
+    );
+    final completer = Completer<VideoModel>();
+    scraper.detailCompleter = completer;
+
+    await tester.tap(find.text('昨日观看'));
+    await tester.pump();
+    router.push('/search');
+    await tester.pumpAndSettle();
+    expect(find.text('搜索页面'), findsOneWidget);
+
+    completer.completeError(Exception('network down'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('搜索页面'), findsOneWidget);
+    expect(find.textContaining('详情 saved'), findsNothing);
   });
 
   for (final size in [

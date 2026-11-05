@@ -86,6 +86,7 @@ final routerProvider = Provider<GoRouter>((ref) {
             videoId: extra['videoId'] as String?,
             videoTitle: extra['videoTitle'] as String?,
             cover: extra['cover'] as String?,
+            sourceId: extra['sourceId'] as String?,
           );
         },
       ),

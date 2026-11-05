@@ -99,12 +99,20 @@ class EpisodeModel {
   final int? index;
   final String? playUrl;
 
+  /// [url] 是否为可直接播放的媒体地址（m3u8/mp4 等，可能带签名且会轮换）。
+  ///
+  /// 由数据源显式声明：LziApiScraper 的 vod_play_url 是媒体地址；页面型
+  /// 数据源的 url 是详情页地址。续播/弹幕关联用该标记区分“页面身份”与
+  /// “易失媒体地址”，不能靠扩展名黑名单猜测。
+  final bool urlIsMediaPlayback;
+
   EpisodeModel({
     required this.id,
     required this.title,
     required this.url,
     this.index,
     this.playUrl,
+    this.urlIsMediaPlayback = false,
   });
 
   factory EpisodeModel.fromJson(Map<String, dynamic> json) {
@@ -114,6 +122,7 @@ class EpisodeModel {
       url: json['url'] as String,
       index: json['index'] as int?,
       playUrl: json['playUrl'] as String?,
+      urlIsMediaPlayback: json['urlIsMediaPlayback'] == true,
     );
   }
 
@@ -124,6 +133,7 @@ class EpisodeModel {
       'url': url,
       'index': index,
       'playUrl': playUrl,
+      'urlIsMediaPlayback': urlIsMediaPlayback,
     };
   }
 }

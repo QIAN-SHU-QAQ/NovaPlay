@@ -6,6 +6,9 @@ class HistoryItem {
   final String videoId;
   final String title;
   final String? cover;
+
+  /// 作品来源标识（数据源名称）：用于续播时确认新详情属于原作品。
+  final String? sourceId;
   final List<EpisodeModel> episodes;
   final int episodeIndex;
   final Duration position;
@@ -16,6 +19,7 @@ class HistoryItem {
     required this.videoId,
     required this.title,
     this.cover,
+    this.sourceId,
     this.episodes = const [],
     required this.episodeIndex,
     required this.position,
@@ -39,6 +43,7 @@ class HistoryItem {
       videoId: json['videoId'] as String,
       title: json['title'] as String,
       cover: json['cover'] as String?,
+      sourceId: json['sourceId'] as String?,
       episodes:
           (json['episodes'] as List?)
               ?.map((e) => EpisodeModel.fromJson(e as Map<String, dynamic>))
@@ -58,6 +63,7 @@ class HistoryItem {
       'videoId': videoId,
       'title': title,
       'cover': cover,
+      'sourceId': sourceId,
       'episodes': episodes.map((e) => e.toJson()).toList(),
       'episodeIndex': episodeIndex,
       'positionMs': position.inMilliseconds,
