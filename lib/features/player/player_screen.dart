@@ -372,6 +372,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                 url: e.value['pageUrl'] ?? e.value['url'] ?? '',
                 index: e.key,
                 playUrl: e.value['url'],
+                urlIsMediaPlayback: e.value['media'] == 'true',
               ),
             )
             .toList();

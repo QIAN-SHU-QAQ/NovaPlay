@@ -134,19 +134,20 @@ void main() {
               'title': e.title,
               'url': e.playUrl ?? e.url,
               'pageUrl': e.url,
+              'media': e.urlIsMediaPlayback ? 'true' : 'false',
             },
           )
           .toList();
     }
 
-    // 第一次解析：LziApi 的 EpisodeModel.url 就是媒体地址（old2.m3u8）。
-    playlist =
-        '第1集\$https://cdn.test/hls/old1.m3u8#第2集\$https://cdn.test/hls/old2.m3u8';
+    // 真实 LziApi 的 vod_play_url 是直接媒体地址，甚至可能没有扩展名。
+    playlist = '第1集\$https://cdn.test/hls/old1#第2集\$https://cdn.test/hls/old2';
     final first = await scraper.getDetail('42');
     final firstMaps = episodeMaps(first);
+    expect(firstMaps[1]['media'], 'true', reason: 'LziApi 地址必须标记为媒体地址');
     final identity = episodeIdentityFromMap(firstMaps[1], firstMaps);
     expect(identity, isNotNull);
-    expect(identity, contains('第2集'), reason: '易失媒体地址不能作为身份，应使用唯一标题');
+    expect(identity, contains('第2集'), reason: '直接媒体地址（即使无扩展名）不能作为身份，应使用唯一标题');
 
     final mappingKey = DatabaseService.danmakuMappingEntryKey(
       first.id,
@@ -164,8 +165,7 @@ void main() {
     expect(db.getDanmakuMapping(mappingKey)?['episodeId'], 222);
 
     // 源刷新：媒体地址轮换（old→new），列表位置/标题不变。
-    playlist =
-        '第1集\$https://cdn.test/hls/new1.m3u8#第2集\$https://cdn.test/hls/new2.m3u8';
+    playlist = '第1集\$https://cdn.test/hls/new1#第2集\$https://cdn.test/hls/new2';
     final refreshed = await scraper.getDetail('42');
     final newMaps = episodeMaps(refreshed);
     final newIdentity = episodeIdentityFromMap(newMaps[1], newMaps);
@@ -196,6 +196,6 @@ void main() {
       fetchDetail: () => scraper.getDetail('42'),
     );
     expect(target, isNotNull);
-    expect(target!.videoUrl, 'https://cdn.test/hls/new2.m3u8');
+    expect(target!.videoUrl, 'https://cdn.test/hls/new2');
   });
 }

@@ -458,6 +458,7 @@ class LziApiScraper extends BaseScraper {
             url: url,
             index: i,
             playUrl: url, // 直接播放地址
+            urlIsMediaPlayback: true,
           ),
         );
       }

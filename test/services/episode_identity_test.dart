@@ -90,9 +90,75 @@ void main() {
 
   test('R5：媒体地址 + 重复标题时无法确认身份', () {
     final episodes = [
-      {'id': 'ep_1', 'title': '第1集', 'pageUrl': 'https://cdn/a.m3u8'},
-      {'id': 'ep_2', 'title': '第1集', 'pageUrl': 'https://cdn/b.m3u8'},
+      {
+        'id': 'ep_1',
+        'title': '第1集',
+        'pageUrl': 'https://cdn/a',
+        'media': 'true',
+      },
+      {
+        'id': 'ep_2',
+        'title': '第1集',
+        'pageUrl': 'https://cdn/b',
+        'media': 'true',
+      },
     ];
     expect(episodeIdentityFromMap(episodes[1], episodes), isNull);
+  });
+
+  test('R5：来源显式标记媒体地址时（即使无扩展名）不能当页面身份', () {
+    final oldEpisodes = [
+      {
+        'id': 'ep_1',
+        'title': '第1集',
+        'pageUrl': 'https://cdn.test/hls/old1',
+        'media': 'true',
+      },
+      {
+        'id': 'ep_2',
+        'title': '第2集',
+        'pageUrl': 'https://cdn.test/hls/old2',
+        'media': 'true',
+      },
+    ];
+    final refreshed = [
+      {
+        'id': 'ep_1',
+        'title': '第1集',
+        'pageUrl': 'https://cdn.test/hls/new1',
+        'media': 'true',
+      },
+      {
+        'id': 'ep_2',
+        'title': '第2集',
+        'pageUrl': 'https://cdn.test/hls/new2',
+        'media': 'true',
+      },
+    ];
+    final before = episodeIdentityFromMap(oldEpisodes[1], oldEpisodes);
+    final after = episodeIdentityFromMap(refreshed[1], refreshed);
+    expect(before, 'title:第2集');
+    expect(after, before, reason: '无扩展名媒体地址轮换后身份也必须保持');
+  });
+
+  test('R5：页面型来源显式标记非媒体地址时使用页面身份', () {
+    final episodes = [
+      {
+        'id': 'ep_1',
+        'title': '第1集',
+        'pageUrl': 'https://site/episode/1',
+        'media': 'false',
+      },
+      {
+        'id': 'ep_2',
+        'title': '第2集',
+        'pageUrl': 'https://site/episode/2',
+        'media': 'false',
+      },
+    ];
+    expect(
+      episodeIdentityFromMap(episodes[1], episodes),
+      'page:https://site/episode/2',
+    );
   });
 }

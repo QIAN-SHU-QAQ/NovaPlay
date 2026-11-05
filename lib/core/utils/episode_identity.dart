@@ -1,11 +1,13 @@
 /// 剧集身份工具。
 ///
-/// 不同数据源提供的剧集标识可靠性不同：例如 LziApiScraper 的
-/// `_parseVideo` 用列表位置生成 `ep_1`/`ep_2`，刷新或重排后会指向另一集，
-/// **不是**可验证的稳定身份；而外部源（如 Bangumi/AniList 等）可能提供
-/// 真实 episode id。此外 `EpisodeModel.url` 在部分源里是**媒体地址**
-/// （m3u8/mp4，带签名或 CDN 参数，刷新后会轮换），也不能当页面身份。
-/// 续播与弹幕关联必须区分这些来源，不能把位置标识/易失媒体地址当身份。
+/// 不同数据源提供的剧集标识可靠性不同：
+/// - LziApiScraper 用列表位置生成 `ep_1`/`ep_2`，刷新或重排后会指向另一集，
+///   **不是**稳定身份；它的 `vod_play_url` 是**直接媒体地址**（m3u8/mp4 等，
+///   可能带签名轮换，甚至没有扩展名），也不能当页面身份。
+/// - 页面型数据源（如 Yhdm/AniList）的 episode url 是详情页地址，可作为身份。
+///
+/// 因此 [EpisodeModel.urlIsMediaPlayback] 由数据源显式声明用途；身份计算
+/// 依赖该标记，而不是靠扩展名黑名单猜测。
 library;
 
 /// 是否为来源提供的稳定剧集 ID（排除本地按位置生成的 `ep_N`）。
@@ -16,10 +18,9 @@ bool isStableEpisodeId(String? id) {
   return true;
 }
 
-/// 是否像会轮换的媒体地址（m3u8/mp4 等，或带签名/过期参数）。
+/// 兼容旧数据的兜底启发式：明显是媒体地址或带签名参数时不可作为页面身份。
 ///
-/// LziApiScraper 的 `EpisodeModel.url` 就是媒体地址；把它当页面身份会导致
-/// 刷新后手动弹幕关联键改变、已保存的纠正失效。
+/// 新数据必须使用显式 `media` 标记；该函数只用于标记缺失的旧历史/旧快照。
 bool isVolatileMediaUrl(String? url) {
   final value = url?.trim() ?? '';
   if (value.isEmpty) return true;
@@ -41,7 +42,6 @@ bool isVolatileMediaUrl(String? url) {
   for (final extension in mediaExtensions) {
     if (path.endsWith(extension)) return true;
   }
-  // 带签名/过期参数的地址即使不是媒体扩展名也不稳定。
   final queryIndex = lower.indexOf('?');
   final query = queryIndex >= 0 ? lower.substring(queryIndex + 1) : '';
   const volatileParams = [
@@ -61,8 +61,8 @@ bool isVolatileMediaUrl(String? url) {
 ///
 /// 顺序：
 /// 1. 来源提供的稳定 episode ID；
-/// 2. 稳定页面 URL（pageUrl，排除 m3u8/mp4/带签名等易失媒体地址）；
-/// 3. 当前列表内**唯一**标题（位置 ID 与媒体 URL 都不可靠时的兜底）。
+/// 2. 页面 URL（**仅当来源显式标记不是媒体地址**；标记缺失时用启发式兜底）；
+/// 3. 当前列表内**唯一**标题（位置 ID 与媒体地址都不可靠时的兜底）。
 ///
 /// 都不可用时返回 null（调用方应禁用该集的手动关联，不能退回列表下标）。
 String? episodeIdentityFromMap(
@@ -72,9 +72,12 @@ String? episodeIdentityFromMap(
   final id = episode['id']?.trim() ?? '';
   if (isStableEpisodeId(id)) return 'id:$id';
 
+  final mediaFlag = (episode['media'] ?? '').trim().toLowerCase();
   final pageUrl = episode['pageUrl']?.trim() ?? '';
-  if (pageUrl.isNotEmpty && !isVolatileMediaUrl(pageUrl)) {
-    return 'page:$pageUrl';
+  if (pageUrl.isNotEmpty && mediaFlag != 'true') {
+    if (mediaFlag == 'false') return 'page:$pageUrl';
+    // 旧数据没有显式标记：只能用启发式避免把明显媒体地址当页面。
+    if (!isVolatileMediaUrl(pageUrl)) return 'page:$pageUrl';
   }
 
   final title = episode['title']?.trim() ?? '';

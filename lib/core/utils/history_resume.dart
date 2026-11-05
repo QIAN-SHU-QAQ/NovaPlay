@@ -66,6 +66,7 @@ Future<HistoryResumeTarget?> resolveHistoryResumeTarget(
                 'title': e.title,
                 'url': e.playUrl ?? e.url,
                 'pageUrl': e.url,
+                'media': e.urlIsMediaPlayback ? 'true' : 'false',
               },
             )
             .toList(),
