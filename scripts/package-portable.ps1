@@ -21,6 +21,37 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Resolve junction/symlink chains so two spellings of the same directory cannot
+# bypass the overlap checks below.
+function Resolve-RealPath([string]$Path) {
+    $full = [System.IO.Path]::GetFullPath($Path)
+    for ($i = 0; $i -lt 10; $i++) {
+        $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item) { break }
+        $target = $item.LinkTarget
+        if ([string]::IsNullOrWhiteSpace($target)) { break }
+        if (-not [System.IO.Path]::IsPathRooted($target)) {
+            $target = Join-Path (Split-Path -Parent $full) $target
+        }
+        $full = [System.IO.Path]::GetFullPath($target)
+    }
+    return $full.TrimEnd('\')
+}
+
+function Test-PathOverlap([string]$A, [string]$B) {
+    $ra = Resolve-RealPath $A
+    $rb = Resolve-RealPath $B
+    if ($ra -eq $rb) { return $true }
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    if ($ra.StartsWith($rb + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    if ($rb.StartsWith($ra + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    return $false
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 if ([string]::IsNullOrWhiteSpace($BuildDir)) {
@@ -98,6 +129,19 @@ $stage = Join-Path $OutputDir $packageName
 $zipPath = Join-Path $OutputDir "$packageName.zip"
 $shaPath = "$zipPath.sha256"
 
+# ---- safety: input and staging/output must never overlap ----
+# Re-packaging an old staging directory (BuildDir == stage) used to delete the
+# build source here and still report success with a docs-only ZIP.
+if (Test-PathOverlap $BuildDir $stage) {
+    throw "BuildDir 不能与 staging 目录相同或互相包含：BuildDir=$BuildDir stage=$stage"
+}
+if (Test-PathOverlap $BuildDir $OutputDir) {
+    throw "BuildDir 不能与 OutputDir 相同或互相包含：BuildDir=$BuildDir OutputDir=$OutputDir"
+}
+if (Test-PathOverlap $BuildDir $zipPath) {
+    throw "BuildDir 不能包含 ZIP 输出路径：BuildDir=$BuildDir zip=$zipPath"
+}
+
 # ---- stage ----
 if (-not (Test-Path -LiteralPath $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir | Out-Null
@@ -142,6 +186,27 @@ foreach ($file in (Get-ChildItem -LiteralPath $stage -Recurse -File)) {
 }
 if ($forbidden.Count -gt 0) {
     throw ("包内发现不应分发的文件：" + ($forbidden -join ", "))
+}
+
+# ---- final staging validation: never produce a ZIP without runnable files ----
+$stageExe = Join-Path $stage "nova_play.exe"
+$stageDll = Join-Path $stage "flutter_windows.dll"
+$stageData = Join-Path $stage "data"
+if (-not (Test-Path -LiteralPath $stageExe -PathType Leaf)) {
+    throw "staging 缺少 nova_play.exe，拒绝生成 ZIP：$stage"
+}
+if (-not (Test-Path -LiteralPath $stageDll -PathType Leaf)) {
+    throw "staging 缺少 flutter_windows.dll，拒绝生成 ZIP：$stage"
+}
+if (-not (Test-Path -LiteralPath $stageData -PathType Container)) {
+    throw "staging 缺少 data 目录，拒绝生成 ZIP：$stage"
+}
+if (-not (Get-ChildItem -LiteralPath $stageData -Recurse -File | Select-Object -First 1)) {
+    throw "staging 的 data 目录为空，拒绝生成 ZIP：$stage"
+}
+# The source must still be intact after staging (guards against path overlap bugs).
+if (-not (Test-Path -LiteralPath (Join-Path $BuildDir "nova_play.exe") -PathType Leaf)) {
+    throw "打包过程中 BuildDir 被修改/删除：$BuildDir"
 }
 
 # ---- zip + checksum ----

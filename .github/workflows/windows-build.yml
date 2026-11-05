@@ -1,8 +1,10 @@
 name: windows-build
 
 # Windows 预览版构建与打包（R8）。
-# - PR/手动触发都会在干净 Windows runner 上执行锁定依赖、格式、分析、测试和 Release 构建；
-# - 手动触发可以选择创建 draft Release（需维护者核对资产后再决定公开）。
+# - PR 与手动触发的构建都只读权限、不持久化 Git 凭据、不使用共享缓存；
+# - 构建完成后上传 ZIP + SHA-256 artifact；
+# - 只有手动触发并勾选 create_draft_release 时，才由独立的写权限 job
+#   下载 artifact 创建 draft Release（该 job 不检出/执行 PR 代码）。
 
 on:
   workflow_dispatch:
@@ -20,25 +22,34 @@ on:
   pull_request:
     branches: [main]
 
+# PR 验证默认只有读权限；写权限仅授予独立的发布 job。
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  validate:
     name: Build Windows preview
     runs-on: windows-2022
     timeout-minutes: 45
+    permissions:
+      contents: read
 
     steps:
-      - name: Checkout
+      - name: Checkout (no persisted credentials)
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
+      # No cache: PR code runs in a clean, read-only environment.
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           flutter-version: "3.29.3"
-          cache: true
 
       - name: Toolchain versions
         shell: pwsh
@@ -49,6 +60,21 @@ jobs:
 
       - name: Install dependencies (locked)
         run: flutter pub get --enforce-lockfile
+
+      - name: Check PowerShell scripts parse
+        shell: pwsh
+        run: |
+          foreach ($file in Get-ChildItem scripts -Filter *.ps1) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              Write-Error "PowerShell syntax error in $($file.Name)"
+            }
+          }
+
+      - name: Script boundary regression tests
+        shell: pwsh
+        run: ./scripts/test-scripts.ps1
 
       - name: Format
         run: dart format --output=none --set-exit-if-changed lib test
@@ -82,18 +108,35 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-      - name: Create draft release (manual trigger only)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.create_draft_release == 'true' }}
-        shell: pwsh
+  publish-draft:
+    name: Create draft release
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.create_draft_release == 'true' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: NovaPlay-windows-preview
+          path: artifacts
+
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          $version = "${{ github.event.inputs.version }}"
-          if ([string]::IsNullOrWhiteSpace($version)) {
-            $tag = "preview-${{ github.run_number }}"
-          } else {
-            $tag = $version.TrimStart('v')
-            if (-not $tag.StartsWith('v')) { $tag = "v$tag" }
-          }
-          $assets = Get-ChildItem dist -File | ForEach-Object { $_.FullName }
-          gh release create $tag $assets --draft --target "${{ github.sha }}" --title "NovaPlay $tag (Windows preview)" --notes-file docs/preview-notes.md
+          version="${{ github.event.inputs.version }}"
+          if [ -z "$version" ]; then
+            tag="preview-${{ github.run_number }}"
+          else
+            tag="v${version#v}"
+          fi
+          gh release create "$tag" artifacts/* \
+            --draft \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "NovaPlay $tag (Windows preview)" \
+            --notes "Windows 10/11 x64 便携预览包（ZIP + SHA-256）。运行要求与已知限制见包内 使用说明.md；未做代码签名，请先核对哈希。此包由 CI 构建，干净机器验收仍需人工执行。"

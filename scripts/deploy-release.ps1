@@ -29,6 +29,49 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Resolve junction/symlink chains so two spellings of the same directory cannot
+# bypass the overlap checks below.
+function Resolve-RealPath([string]$Path) {
+    $full = [System.IO.Path]::GetFullPath($Path)
+    for ($i = 0; $i -lt 10; $i++) {
+        $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item) { break }
+        $target = $item.LinkTarget
+        if ([string]::IsNullOrWhiteSpace($target)) { break }
+        if (-not [System.IO.Path]::IsPathRooted($target)) {
+            $target = Join-Path (Split-Path -Parent $full) $target
+        }
+        $full = [System.IO.Path]::GetFullPath($target)
+    }
+    return $full.TrimEnd('\')
+}
+
+function Test-SamePath([string]$A, [string]$B) {
+    return (Resolve-RealPath $A) -eq (Resolve-RealPath $B)
+}
+
+function Test-PathOverlap([string]$A, [string]$B) {
+    $ra = Resolve-RealPath $A
+    $rb = Resolve-RealPath $B
+    if ($ra -eq $rb) { return $true }
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    if ($ra.StartsWith($rb + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    if ($rb.StartsWith($ra + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    return $false
+}
+
+function Test-IsSameOrAncestor([string]$A, [string]$B) {
+    $ra = Resolve-RealPath $A
+    $rb = Resolve-RealPath $B
+    if ($ra -eq $rb) { return $true }
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    return $rb.StartsWith($ra + $sep, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
@@ -61,6 +104,17 @@ foreach ($root in $systemRoots) {
 }
 if ($normalizedTarget -eq $ProjectRoot.TrimEnd('\')) {
     throw "TargetDir 不能是仓库根目录：$TargetDir"
+}
+
+# The deploy step clears TargetDir. Refuse any relationship with the build
+# source (same dir, parent or child) before stopping processes or deleting files.
+if (Test-PathOverlap $TargetDir $BuildDir) {
+    throw "TargetDir 不能与 BuildDir 相同或互相包含：TargetDir=$TargetDir BuildDir=$BuildDir"
+}
+# Allow the default target inside the repo, but never allow clearing a directory
+# that contains the repository (e.g. -TargetDir D:\ where the repo lives).
+if (Test-IsSameOrAncestor $TargetDir $ProjectRoot) {
+    throw "TargetDir 不能是仓库根目录或其祖先目录：$TargetDir"
 }
 
 $exeSource = Join-Path $BuildDir "nova_play.exe"
