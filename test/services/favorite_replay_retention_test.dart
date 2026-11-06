@@ -45,6 +45,10 @@ void main() {
     await db.addFavorite(
       VideoModel(id: target, title: 'Target', episodes: episodes),
     );
+    // Keep the player's in-memory snapshot, but stop background retries
+    // while the test drives the main process and advances its replay state.
+    db.detachBridge();
+    db.setJournalDirectory(temp);
     final oversized = temp.listSync().whereType<File>().singleWhere(
       (file) => file.path.endsWith('.oversized.json'),
     );
@@ -100,6 +104,10 @@ void main() {
 
     // The same player adds a new oversized favorite and rewrites its pending snapshot.
     const newId = 'new-favorite';
+    db.attachBridge(
+      PrefsBridgeClient(0, endpointFile: endpoint),
+      journalDir: temp,
+    );
     await db.addFavorite(
       VideoModel(id: newId, title: 'New favorite', episodes: episodes),
     );
