@@ -65,6 +65,16 @@ R1–R8 各任务的自动化用例与实测范围见各 PR 描述及[下一阶�
 
 第三方片源失效、旧历史播放地址过期及 Bangumi 同名作品误匹配，仍需要在使用中留意。
 
+### 验收记录（2026-11-06）
+
+PR #7（R1 历史有序补交/版本规则 + R6 配置桥强制会话校验）在修复提交 `b3ab3be` 上的验证记录：
+
+- **自动化测试**：`flutter test` 200/200 通过，`dart format` 无改动，`flutter analyze` 0 issue。
+- **GitHub CI**：`CI validation` 通过（精确 head/base 的隔离测试与 Windows 构建）；`Build Windows preview` 通过并产出便携包。
+- **集成验证**：main `1f0b338` + 本 PR 合并后 200/200 测试通过；Windows Release 构建成功，`scripts/test-scripts.ps1` 边界回归全部通过。
+- **实机验证**：双播放器 + 主窗口重启场景通过——R6 会话校验生效、旧播放器自动重连、离线日志回放后观看时间单调前进、日志清空。
+- **待维护者审批**：本记录不替代独立审批；仍需维护者在当前 head 上填写 `Acceptance-SHA` 后由自动合并合入 main。真实弹幕/Bangumi 服务、真实 CDN 清单变化和干净机器分发仍未验收。
+
 ## 从源码运行
 
 项目以 Windows 桌面端为开发和验证目标。准备 Git、Flutter SDK，以及带有 C++ 桌面开发组件和 Windows SDK 的 Visual Studio。
