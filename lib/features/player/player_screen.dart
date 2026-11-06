@@ -382,6 +382,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _recordHistory() {
     final videoId = widget.videoId;
     if (!_session.ready || _session.loading) return;
+    // 续播起点还在等待媒体层确认时不得写历史：0/5 秒的初始位置会把
+    // 用户原来的 180 秒进度覆盖掉。确认失败/取消同样保持旧进度。
+    if (_session.resumePending) return;
     if (videoId == null || videoId.isEmpty) return;
     final snapshots = _episodeModels;
     if (snapshots == null || snapshots.isEmpty) return;
@@ -439,7 +442,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   void _seekBy(int seconds) {
     if (!_isInitialized) return;
-    final target = _player.state.position + Duration(seconds: seconds);
+    var target = _player.state.position + Duration(seconds: seconds);
+    if (target < Duration.zero) target = Duration.zero;
+    // 用户主动跳转：允许结束续播待确认状态并保存新位置。
+    _session.noteUserSeek(target);
+    _player.seek(target);
+  }
+
+  /// 用户拖动进度条：明确意图，允许历史保存新位置（包括拖回更早位置）。
+  void _seekToUser(Duration position) {
+    if (!_isInitialized) return;
+    final target = position < Duration.zero ? Duration.zero : position;
+    _session.noteUserSeek(target);
     _player.seek(target);
   }
 
@@ -838,7 +852,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     progress: positionSnap.data ?? Duration.zero,
                     buffered: bufferSnap.data ?? Duration.zero,
                     total: total,
-                    onSeek: (position) => _player.seek(position),
+                    onSeek: _seekToUser,
                     barHeight: 4,
                     thumbRadius: 6,
                     baseBarColor: Colors.white24,
