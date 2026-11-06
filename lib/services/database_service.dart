@@ -33,6 +33,7 @@ class DatabaseService {
   static const String _favoritesKey = 'favorites_v1';
   static const String _favoritesTombstonesKey = 'favorites_tombstones_v1';
   static const String _favoritesVersionsKey = 'favorites_versions_v1';
+  static const String _favoritesReplayGuardsKey = 'favorites_replay_guards_v1';
   static const String _historyKey = 'history_v1';
   static const String _historyTombstonesKey = 'history_tombstones_v1';
   static const String _historyClearAtKey = 'history_clear_at_v1';
@@ -238,7 +239,8 @@ class DatabaseService {
       case 'danmaku.map.set':
         final key = raw['key'];
         final value = raw['value'];
-        if (key is! String || value is! Map) return 'bad_item';
+        if (key is! String || key.trim().isEmpty) return 'bad_item';
+        if (!_isValidDanmakuMappingValue(value)) return 'bad_item';
         return null;
       case 'danmaku.map.remove':
         return raw['key'] is String ? null : 'bad_item';
@@ -265,6 +267,8 @@ class DatabaseService {
     if (raw['videoId'] is! String || raw['title'] is! String) return false;
     if (DateTime.tryParse('${raw['watchedAt']}') == null) return false;
     if (raw['cover'] != null && raw['cover'] is! String) return false;
+    // sourceId 会被 HistoryItem.fromJson 强转为 String?，必须先校验类型。
+    if (raw['sourceId'] != null && raw['sourceId'] is! String) return false;
     final episodeIndex = raw['episodeIndex'];
     if (episodeIndex != null && episodeIndex is! int) return false;
     final positionMs = raw['positionMs'];
@@ -292,6 +296,10 @@ class DatabaseService {
     if (index != null && index is! int) return false;
     final playUrl = raw['playUrl'];
     if (playUrl != null && playUrl is! String) return false;
+    final urlIsMediaPlayback = raw['urlIsMediaPlayback'];
+    if (urlIsMediaPlayback != null && urlIsMediaPlayback is! bool) {
+      return false;
+    }
     return true;
   }
 
@@ -321,6 +329,21 @@ class DatabaseService {
       for (final episode in episodes) {
         if (!_isValidEpisode(episode)) return false;
       }
+    }
+    return true;
+  }
+
+  /// 弹幕手动关联值必须能被播放器安全读取：
+  /// `episodeId` 必须是整数（播放器只认整数），标题字段必须是字符串。
+  bool _isValidDanmakuMappingValue(Object? raw) {
+    if (raw is! Map) return false;
+    if (raw['episodeId'] is! int) return false;
+    for (final key in ['animeTitle', 'episodeTitle']) {
+      if (raw[key] != null && raw[key] is! String) return false;
+    }
+    final updatedAt = raw['updatedAt'];
+    if (updatedAt != null && DateTime.tryParse('$updatedAt') == null) {
+      return false;
     }
     return true;
   }
@@ -391,23 +414,27 @@ class DatabaseService {
     List<Map<String, dynamic>> ops,
   ) async {
     final changed = <String>{};
+    // 先整体预检：任何一条非法都不写入（服务器入口也会调用，这里防直接
+    // 调用/回放漏网，并避免“前半批已落盘、后半批抛异常”）。
     for (final op in ops) {
       final error = _validateOp(op);
       if (error != null) {
-        debugPrint('拒绝非法远程操作 $error: $op');
+        debugPrint('拒绝非法远程操作批次 $error: $op');
+        return changed;
+      }
+    }
+    for (final op in ops) {
+      final opId = op['opId'];
+      final hasOpId = opId is String && opId.isNotEmpty;
+      if (hasOpId && _appliedOpIds.contains(opId)) {
+        // 服务端已应用、客户端响应丢失后的重试：只回确认，不重复写入。
+        final key = _keyForOp(op);
+        if (key != null) changed.add(key);
         continue;
       }
-      final opId = op['opId'];
-      if (opId is String && opId.isNotEmpty) {
-        if (_appliedOpIds.contains(opId)) {
-          // 服务端已应用、客户端响应丢失后的重试：只回确认，不重复写入。
-          final key = _keyForOp(op);
-          if (key != null) changed.add(key);
-          continue;
-        }
-        _rememberOpId(opId);
-      }
       final key = await _applyOpLocal(op);
+      // 只有真正执行成功后才记录 opId；执行失败的操作必须允许重试。
+      if (hasOpId) _rememberOpId(opId);
       if (key != null) changed.add(key);
     }
     return changed;
@@ -540,9 +567,14 @@ class DatabaseService {
           final raw = await source.readAsString();
           final decoded = jsonDecode(raw);
           if (decoded is List) {
+            final typedOps = <Map<String, dynamic>>[];
             for (final op in decoded) {
-              if (op is! Map) continue;
-              final typed = op.cast<String, dynamic>();
+              if (op is Map) typedOps.add(op.cast<String, dynamic>());
+            }
+            // 先记录回放保护，再应用：即使应用/删除日志过程中崩溃，
+            // 后续删除标记回收也不会漏掉这些旧 add。
+            await _recordFavoriteReplayGuards(typedOps);
+            for (final typed in typedOps) {
               final error = _validateOp(typed);
               if (error != null) {
                 debugPrint('跳过非法离线操作 $error: $typed');
@@ -677,10 +709,17 @@ class DatabaseService {
   /// 删除标记（tombstone）的回收必须与“旧日志还能不能回放”一致：只要日志
   /// 里还有某个作品的旧 `favorites.add`，就不能淘汰它的删除标记，否则主进程
   /// 重启回放会把已取消的收藏重新插回来。
-  Future<Set<String>> _favoriteIdsInPendingJournals() async {
+  ///
+  /// 返回 `complete == false` 表示至少有一个日志读不出来（被占用/损坏/目录
+  /// 不可访问），调用方必须保守地放弃本轮回收。
+  Future<({Set<String> ids, bool complete})>
+  _favoriteIdsInPendingJournals() async {
     final dir = await _resolveJournalDir();
-    if (dir == null) return const <String>{};
+    if (dir == null) {
+      return (ids: <String>{}, complete: false);
+    }
     final ids = <String>{};
+    var complete = true;
     try {
       await for (final entity in dir.list(followLinks: false)) {
         if (entity is! File) continue;
@@ -690,7 +729,10 @@ class DatabaseService {
         }
         try {
           final decoded = jsonDecode(await entity.readAsString());
-          if (decoded is! List) continue;
+          if (decoded is! List) {
+            complete = false;
+            continue;
+          }
           for (final op in decoded) {
             if (op is! Map) continue;
             if (op['op'] != 'favorites.add') continue;
@@ -700,11 +742,36 @@ class DatabaseService {
             if (id is String && id.isNotEmpty) ids.add(id);
           }
         } catch (_) {
-          // 单个日志读取/解析失败不影响其他日志。
+          // 日志暂时读不到（Windows 独占/损坏）：本轮不能据此回收标记。
+          complete = false;
         }
       }
-    } catch (_) {}
-    return ids;
+    } catch (_) {
+      complete = false;
+    }
+    return (ids: ids, complete: complete);
+  }
+
+  /// 记录“这条旧日志已经被回放过”。存活播放器可能再次重写整份日志，
+  /// 即使文件已被删除也要让删除标记继续覆盖这些作品 ID。
+  Future<void> _recordFavoriteReplayGuards(
+    Iterable<Map<String, dynamic>> ops,
+  ) async {
+    final ids = <String>{};
+    for (final op in ops) {
+      if (op['op'] != 'favorites.add') continue;
+      final item = op['item'];
+      if (item is! Map) continue;
+      final id = item['id'];
+      if (id is String && id.isNotEmpty) ids.add(id);
+    }
+    if (ids.isEmpty) return;
+    final guards = _loadTimestampMap(_favoritesReplayGuardsKey);
+    final now = DateTime.now();
+    for (final id in ids) {
+      guards[id] = now;
+    }
+    await _saveTimestampMap(_favoritesReplayGuardsKey, guards, limit: 5000);
   }
 
   /// 串行化 journal 快照写入：并发调用不会共用临时文件或互相删除。
@@ -1009,16 +1076,29 @@ class DatabaseService {
   }
 
   Future<void> _saveFavoriteTombstones(Map<String, DateTime> tombstones) async {
-    // 只有在需要裁掉删除标记时才扫描日志；被日志引用的收藏 ID 必须保留标记，
-    // 保证旧日志（普通或超大）回放时仍受删除版本约束。
-    var keepIds = const <String>{};
-    if (tombstones.length > 500) {
-      keepIds = await _favoriteIdsInPendingJournals();
+    // 只有在需要裁掉删除标记时才扫描日志；被日志/已回放日志引用的收藏 ID
+    // 必须保留标记，保证旧日志（普通或超大、可能被存活播放器重写）回放时
+    // 仍受删除版本约束。
+    if (tombstones.length <= 500) {
+      await _saveTimestampMap(_favoritesTombstonesKey, tombstones);
+      return;
     }
+    final scan = await _favoriteIdsInPendingJournals();
+    if (!scan.complete) {
+      // 有日志暂时读不到：本轮不回收，保留全部删除标记。
+      await _saveTimestampMap(
+        _favoritesTombstonesKey,
+        tombstones,
+        keepIds: tombstones.keys.toSet(),
+        limit: tombstones.length > 500 ? tombstones.length : 500,
+      );
+      return;
+    }
+    final guards = _loadTimestampMap(_favoritesReplayGuardsKey);
     await _saveTimestampMap(
       _favoritesTombstonesKey,
       tombstones,
-      keepIds: keepIds,
+      keepIds: {...scan.ids, ...guards.keys},
     );
   }
 
@@ -1043,6 +1123,7 @@ class DatabaseService {
     String key,
     Map<String, DateTime> values, {
     Set<String> keepIds = const <String>{},
+    int limit = 500,
   }) async {
     final prefs = _store;
     if (prefs == null) return;
@@ -1055,7 +1136,7 @@ class DatabaseService {
       if (value != null) selected[id] = value;
     }
     for (final entry in entries) {
-      if (selected.length >= 500) break;
+      if (selected.length >= limit) break;
       selected.putIfAbsent(entry.key, () => entry.value);
     }
     await prefs.setString(

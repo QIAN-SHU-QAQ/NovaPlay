@@ -1071,4 +1071,322 @@ void main() {
     expect(db.getDanmakuFontSize(), 16.0);
     expect(db.getDanmakuArea(), 1.0);
   });
+
+  test('P1：存活播放器重写超限日志后，第二次回放仍不复活已取消收藏', () async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    final tempDir = Directory.systemTemp.createTempSync('nova_replay_twice_');
+    final endpoint = File(
+      '${tempDir.path}${Platform.pathSeparator}bridge_endpoint.json',
+    );
+    addTearDown(() {
+      db.resetForTest();
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    List<EpisodeModel> bigEpisodes() => List.generate(
+      2000,
+      (i) => EpisodeModel(
+        id: 'ep_$i',
+        title: '第 $i 集',
+        url: 'https://cdn.test/${List.filled(250, 'x').join()}/$i.m3u8',
+      ),
+    );
+
+    // 播放器离线写入 target 的超大 add。
+    db.setJournalDirectory(tempDir);
+    db.attachBridge(
+      PrefsBridgeClient(await _deadPort(), endpointFile: endpoint),
+      journalDir: tempDir,
+    );
+    await db.addFavorite(
+      VideoModel(id: 'target', title: 'Target', episodes: bigEpisodes()),
+    );
+    expect(db.oversizedOps, hasLength(1));
+    db.detachBridge();
+    db.setJournalDirectory(tempDir);
+
+    // 主进程第一次回放：target 被加入，超限日志被删除。
+    await db.flushPendingJournals();
+    expect(db.getFavorites().map((v) => v.id), contains('target'));
+
+    // 主进程取消 target，再取消 500 个其他收藏，把版本与删除标记挤出。
+    final base = DateTime.now();
+    for (var i = 0; i < 500; i++) {
+      await db.applyRemoteOps([
+        {
+          'op': 'favorites.add',
+          'opId': 'seed-$i',
+          'at':
+              base
+                  .subtract(const Duration(minutes: 10))
+                  .add(Duration(milliseconds: i))
+                  .toIso8601String(),
+          'item': VideoModel(id: 'other-$i', title: 'Other $i').toJson(),
+        },
+      ]);
+    }
+    await db.applyRemoteOps([
+      {
+        'op': 'favorites.remove',
+        'opId': 'rm-target',
+        'at': base.add(const Duration(minutes: 1)).toIso8601String(),
+        'videoId': 'target',
+      },
+    ]);
+    for (var i = 0; i < 500; i++) {
+      await db.applyRemoteOps([
+        {
+          'op': 'favorites.remove',
+          'opId': 'rm-other-$i',
+          'at':
+              base
+                  .add(const Duration(minutes: 2))
+                  .add(Duration(milliseconds: i))
+                  .toIso8601String(),
+          'videoId': 'other-$i',
+        },
+      ]);
+    }
+    expect(db.getFavorites(), isEmpty);
+
+    // 存活播放器仍持有旧 _oversizedOps；下一次超限写入会重写整份日志。
+    db.attachBridge(
+      PrefsBridgeClient(await _deadPort(), endpointFile: endpoint),
+      journalDir: tempDir,
+    );
+    await db.addFavorite(
+      VideoModel(id: 'new-favorite', title: 'New', episodes: bigEpisodes()),
+    );
+    db.detachBridge();
+    db.setJournalDirectory(tempDir);
+    expect(
+      tempDir.listSync().whereType<File>().any(
+        (file) => file.path.endsWith('.oversized.json'),
+      ),
+      isTrue,
+    );
+
+    // 主进程第二次回放：旧 target add 不能复活，新收藏正常写入。
+    db.resetForTest();
+    await db.init();
+    db.setJournalDirectory(tempDir);
+    await db.flushPendingJournals();
+    expect(db.getFavorites().map((v) => v.id), ['new-favorite']);
+  });
+
+  test('P1：日志暂时读不到时保守保留删除标记，恢复回放不复活', () async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    final tempDir = Directory.systemTemp.createTempSync('nova_scan_fail_');
+    addTearDown(() {
+      db.resetForTest();
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+    db.setJournalDirectory(tempDir);
+
+    final base = DateTime.now();
+    await db.applyRemoteOps([
+      {
+        'op': 'favorites.add',
+        'opId': 'target-add',
+        'at': base.subtract(const Duration(minutes: 10)).toIso8601String(),
+        'item': VideoModel(id: 'target', title: 'Target').toJson(),
+      },
+    ]);
+    for (var i = 0; i < 500; i++) {
+      await db.applyRemoteOps([
+        {
+          'op': 'favorites.add',
+          'opId': 'seed-$i',
+          'at':
+              base
+                  .subtract(const Duration(minutes: 9))
+                  .add(Duration(milliseconds: i))
+                  .toIso8601String(),
+          'item': VideoModel(id: 'other-$i', title: 'Other $i').toJson(),
+        },
+      ]);
+    }
+
+    // 一个无法解析的旧日志（模拟被独占/损坏）：扫描必须判定为不完整。
+    final corrupt = File(
+      '${tempDir.path}${Platform.pathSeparator}pending_ops.777.json',
+    );
+    await corrupt.writeAsBytes([0xFF, 0xFE, 0xFF, 0x00]);
+
+    await db.applyRemoteOps([
+      {
+        'op': 'favorites.remove',
+        'opId': 'rm-target',
+        'at': base.add(const Duration(minutes: 1)).toIso8601String(),
+        'videoId': 'target',
+      },
+    ]);
+    for (var i = 0; i < 500; i++) {
+      await db.applyRemoteOps([
+        {
+          'op': 'favorites.remove',
+          'opId': 'rm-other-$i',
+          'at':
+              base
+                  .add(const Duration(minutes: 2))
+                  .add(Duration(milliseconds: i))
+                  .toIso8601String(),
+          'videoId': 'other-$i',
+        },
+      ]);
+    }
+    expect(db.getFavorites(), isEmpty);
+
+    // 日志恢复可读后回放旧 add：删除标记没有被回收，target 不能复活。
+    await corrupt.delete();
+    final recovered = File(
+      '${tempDir.path}${Platform.pathSeparator}pending_ops.888.json',
+    );
+    await recovered.writeAsString(
+      jsonEncode([
+        {
+          'op': 'favorites.add',
+          'opId': 'target-add',
+          'at': base.subtract(const Duration(minutes: 10)).toIso8601String(),
+          'item': VideoModel(id: 'target', title: 'Target').toJson(),
+        },
+      ]),
+    );
+    db.resetForTest();
+    await db.init();
+    db.setJournalDirectory(tempDir);
+    await db.flushPendingJournals();
+    expect(db.getFavorites(), isEmpty);
+  });
+
+  test('P2：畸形历史 sourceId 整批拒绝且不留下部分写入', () async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    final server = await PrefsBridgeServer.start(
+      onSet: (key, value) => db.applyRemoteSet(key, value),
+      onRemove: (key) => db.applyRemoteSet(key, null),
+      onOps: (ops) => db.applyRemoteOps(ops),
+      validatePayload: (payload) async => db.validateRemotePayload(payload),
+    );
+    addTearDown(() async {
+      db.resetForTest();
+      await server?.dispose();
+    });
+    Future<Map<String, dynamic>> send(Map<String, Object?> payload) =>
+        _rawRequest(server!.port, {...payload, 'session': server.session});
+
+    final badHistory =
+        _history('v1', 30, watchedAt: DateTime(2026, 11, 6, 8)).toJson()
+          ..['sourceId'] = 7;
+    final payload = <String, Object?>{
+      'ops': [
+        {
+          'op': 'danmaku.map.set',
+          'key': 'v1||title:第2集',
+          'value': {'episodeId': 222, 'animeTitle': 'QA'},
+        },
+        {'op': 'history.upsert', 'opId': 'history-bad', 'item': badHistory},
+      ],
+    };
+
+    var reply = await send(payload);
+    expect(reply['ok'], isFalse);
+    expect(reply['error'], 'bad_item');
+    // 同批中合法弹幕操作也不能先落盘。
+    expect(db.getDanmakuMapping('v1||title:第2集'), isNull);
+    expect(db.getHistory(), isEmpty);
+
+    // 重试仍拒绝，且不能因为 opId 被记录而“确认”。
+    reply = await send(payload);
+    expect(reply['ok'], isFalse);
+    expect(reply['error'], 'bad_item');
+    expect(db.getDanmakuMapping('v1||title:第2集'), isNull);
+
+    // 合法（含旧记录缺省 sourceId）的历史写入仍然接受。
+    final legacy = _history('v1', 30, watchedAt: DateTime(2026, 11, 6, 8));
+    reply = await send({
+      'ops': [
+        {'op': 'history.upsert', 'opId': 'history-ok', 'item': legacy.toJson()},
+      ],
+    });
+    expect(reply['ok'], isTrue);
+    expect(db.getHistory().single.videoId, 'v1');
+  });
+
+  test('P2：弹幕映射字段类型错误整批拒绝并保留原关联', () async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    final server = await PrefsBridgeServer.start(
+      onSet: (key, value) => db.applyRemoteSet(key, value),
+      onRemove: (key) => db.applyRemoteSet(key, null),
+      onOps: (ops) => db.applyRemoteOps(ops),
+      validatePayload: (payload) async => db.validateRemotePayload(payload),
+    );
+    addTearDown(() async {
+      db.resetForTest();
+      await server?.dispose();
+    });
+    Future<Map<String, dynamic>> send(Map<String, Object?> payload) =>
+        _rawRequest(server!.port, {...payload, 'session': server.session});
+
+    const key = 'v1||title:第2集';
+    var reply = await send({
+      'ops': [
+        {
+          'op': 'danmaku.map.set',
+          'opId': 'map-valid',
+          'key': key,
+          'value': {'episodeId': 222, 'animeTitle': 'QA'},
+        },
+      ],
+    });
+    expect(reply['ok'], isTrue);
+    expect(db.getDanmakuMapping(key)?['episodeId'], 222);
+
+    reply = await send({
+      'ops': [
+        {
+          'op': 'danmaku.map.set',
+          'opId': 'map-invalid',
+          'key': key,
+          'value': {'episodeId': 'invalid-id', 'animeTitle': 'QA'},
+        },
+      ],
+    });
+    expect(reply['ok'], isFalse);
+    expect(reply['error'], 'bad_item');
+    expect(db.getDanmakuMapping(key)?['episodeId'], 222);
+
+    reply = await send({
+      'ops': [
+        {
+          'op': 'danmaku.map.set',
+          'opId': 'map-valid-2',
+          'key': key,
+          'value': {
+            'episodeId': 333,
+            'animeTitle': 'QA',
+            'episodeTitle': '第2话',
+            'updatedAt': DateTime(2026, 11, 6).toIso8601String(),
+          },
+        },
+      ],
+    });
+    expect(reply['ok'], isTrue);
+    expect(db.getDanmakuMapping(key)?['episodeId'], 333);
+
+    reply = await send({
+      'ops': [
+        {'op': 'danmaku.map.remove', 'opId': 'map-remove', 'key': key},
+      ],
+    });
+    expect(reply['ok'], isTrue);
+    expect(db.getDanmakuMapping(key), isNull);
+  });
 }
