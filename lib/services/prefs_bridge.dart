@@ -13,27 +13,27 @@ import 'package:flutter/foundation.dart';
 ///
 /// - **主窗口进程是唯一持久化写入方**；
 /// - 播放器进程把写入通过本机 127.0.0.1 TCP 交给主进程；
-/// - 标量设置走 `set`/`remove`；历史/收藏/搜索历史走**语义操作**
-///   （`history.upsert` 等），由主进程在最新状态上合并，避免客户端用
-///   启动时的旧缓存拼出整份列表覆盖新数据；
+/// - 标量设置与历史/收藏/搜索历史统一以「语义操作」`ops` 发送，
+///   由主进程在最新状态上按版本规则合并；
 /// - 主进程写入后广播变更，界面据此刷新；
-/// - 主进程不可用时，播放器把操作写入本地日志文件（journal），
+/// - 主进程不可用时，播放器把操作写入本地日志（journal），
 ///   下次主进程启动时回放，绝不直接写整份 SharedPreferences。
 ///
-/// **主窗口重启**：主窗口每次启动都会监听新的随机端口，并把
-/// 「端口 + 进程 pid + 会话 token」原子写入端点文件
-/// `<应用支持目录>/bridge_endpoint.json`。播放器每次请求前重新读取该文件，
-/// 携带会话 token 连接；token 不匹配（连到旧主进程/旧端点）或连接失败时
-/// 重新读取端点重试，因此旧播放器能自动发现并接上新主窗口。
+/// **协议约束**（R6）：所有请求必须携带当前主进程会话的 session token；
+/// 缺失/空值/类型错误/旧 token 一律拒绝且不执行写入；请求需要先通过
+/// 调用方的 payload 校验（允许的键、操作、结构与大小），否则整批拒绝。
 ///
-/// 传输使用「一行 JSON 一个请求/响应」的极简协议（不依赖 HttpClient，
-/// 便于在 Flutter 测试环境里直接使用）。
+/// **主窗口重启**（端点发现）：主窗口每次启动生成新的 session，并把
+/// `pid/port/session/startedAt` 原子写入 `<应用支持目录>/bridge_endpoint.json`；
+/// 播放器每次请求前重新读取端点文件，连接失败或会话不匹配时重读端点重试，
+/// 因此旧播放器能自动发现并接上重启后的主窗口。
 class PrefsBridgeServer {
   PrefsBridgeServer._(
     this._serverSocket,
     this._onSet,
     this._onRemove,
     this._onOps,
+    this._validatePayload,
     this.session,
     this._endpointFile,
   ) {
@@ -45,11 +45,19 @@ class PrefsBridgeServer {
   /// 当前进程是否已在提供服务（主窗口进程）。
   static PrefsBridgeServer? get instance => _instance;
 
+  /// 单行请求上限：超过直接拒绝，避免异常客户端占满内存。
+  static const int maxPayloadBytes = 512 * 1024;
+
+  /// 没有完整请求连接的超时时间。
+  static const Duration connectionTimeout = Duration(seconds: 5);
+
   static Future<PrefsBridgeServer?> start({
     required Future<void> Function(String key, Object? value) onSet,
     required Future<void> Function(String key) onRemove,
     required Future<Iterable<String>> Function(List<Map<String, dynamic>> ops)
     onOps,
+    required Future<String?> Function(Map<String, dynamic> payload)
+    validatePayload,
     File? endpointFile,
   }) async {
     final existing = _instance;
@@ -64,6 +72,7 @@ class PrefsBridgeServer {
         onSet,
         onRemove,
         onOps,
+        validatePayload,
         _newSessionToken(),
         endpointFile,
       );
@@ -88,6 +97,7 @@ class PrefsBridgeServer {
   final Future<void> Function(String key) _onRemove;
   final Future<Iterable<String>> Function(List<Map<String, dynamic>> ops)
   _onOps;
+  final Future<String?> Function(Map<String, dynamic> payload) _validatePayload;
 
   /// 本次主进程会话的随机 token：请求必须携带相同的值。
   final String session;
@@ -122,18 +132,31 @@ class PrefsBridgeServer {
   }
 
   void _handleConnection(Socket socket) {
+    // 连接超时保护：客户端未在时限内发送完整一行请求就关闭。
+    final idleTimer = Timer(connectionTimeout, () {
+      debugPrint('配置桥连接超时，关闭连接');
+      socket.destroy();
+    });
     socket
         .cast<List<int>>()
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .first
+        .timeout(
+          connectionTimeout,
+          onTimeout: () {
+            socket.destroy();
+            throw TimeoutException('配置桥请求超时');
+          },
+        )
         .then((line) async {
+          idleTimer.cancel();
           Map<String, Object?> reply;
           try {
             reply = await _handleLine(line);
           } catch (e) {
             debugPrint('配置桥处理请求失败: $e');
-            reply = {'ok': false, 'error': '$e'};
+            reply = {'ok': false, 'error': 'internal_error'};
           }
           try {
             socket.write(jsonEncode(reply));
@@ -144,25 +167,38 @@ class PrefsBridgeServer {
           }
         })
         .catchError((Object e) {
+          idleTimer.cancel();
           debugPrint('配置桥连接失败: $e');
           socket.destroy();
         });
   }
 
   Future<Map<String, Object?>> _handleLine(String line) async {
-    final payload = jsonDecode(line);
-    if (payload is! Map) {
-      return {'ok': false, 'error': 'bad payload'};
+    if (line.length > maxPayloadBytes) {
+      return {'ok': false, 'error': 'payload_too_large'};
+    }
+    final decoded = jsonDecode(line);
+    if (decoded is! Map) {
+      return {'ok': false, 'error': 'bad_payload'};
+    }
+    final payload = decoded.cast<String, dynamic>();
+
+    // 强制会话校验：缺失、空值、类型错误、旧 token 均拒绝。
+    final incomingSession = payload['session'];
+    if (incomingSession is! String ||
+        incomingSession.isEmpty ||
+        incomingSession != session) {
+      return {'ok': false, 'error': 'session_required'};
     }
 
-    // 会话校验：客户端可能拿着重启前的旧端点，必须让它在主进程换代后
-    // 重新读取端点文件，而不是把数据写进错误的主进程。
-    final incomingSession = payload['session'];
-    if (incomingSession is String && incomingSession != session) {
-      return {'ok': false, 'error': 'session_mismatch'};
+    // 结构/允许键/允许操作/大小校验；失败时整批拒绝，不执行任何写入。
+    final validationError = await _validatePayload(payload);
+    if (validationError != null) {
+      return {'ok': false, 'error': validationError};
     }
 
     final changed = <String>{};
+    final appliedIds = <String>[];
     final setValues = payload['set'];
     if (setValues is Map) {
       for (final entry in setValues.entries) {
@@ -186,12 +222,21 @@ class PrefsBridgeServer {
           .map((op) => op.cast<String, dynamic>())
           .toList(growable: false);
       changed.addAll(await _onOps(normalized));
+      for (final op in normalized) {
+        final id = op['opId'];
+        if (id is String && id.isNotEmpty) appliedIds.add(id);
+      }
     }
 
     if (changed.isNotEmpty && !_changes.isClosed) {
       _changes.add(changed);
     }
-    return {'ok': true, 'changed': changed.toList(), 'session': session};
+    return {
+      'ok': true,
+      'changed': changed.toList(),
+      'appliedIds': appliedIds,
+      'session': session,
+    };
   }
 
   Future<void> dispose() async {
@@ -210,17 +255,31 @@ class _BridgeEndpoint {
 
 /// 播放器进程用来把配置写入转发给主进程的客户端。
 ///
-/// 启动时拿到主进程的端口作为兜底；之后每次请求都会重新读取端点文件，
-/// 支持主窗口重启后自动发现新端口。
+/// 每次请求前重新读取端点文件（端口 + session），支持主窗口重启后自动发现
+/// 新端口。端点文件存在但缺失/损坏时直接进入离线队列，不使用固定端口兜底，
+/// 避免绕过会话校验。
 class PrefsBridgeClient {
   PrefsBridgeClient(this.port, {this.endpointFile});
 
-  /// 启动参数里带的主进程端口（端点文件不可用时的兜底）。
+  /// 启动参数里带的主进程端口（仅在未提供 [endpointFile] 的测试场景使用）。
   final int port;
 
   /// 主窗口写入的端点文件（含端口 + 会话 token）。
   final File? endpointFile;
 
+  /// 发送语义操作；成功返回主进程确认应用的 opId 集合，失败返回 null。
+  Future<Set<String>?> applyOps(List<Map<String, dynamic>> ops) async {
+    final reply = await _request({'ops': ops});
+    if (reply == null || reply['ok'] != true) return null;
+    final applied = reply['appliedIds'];
+    if (applied is List) {
+      return applied.whereType<String>().toSet();
+    }
+    // 兼容旧服务端：没有 appliedIds 时视为全部应用。
+    return ops.map((op) => op['opId']).whereType<String>().toSet();
+  }
+
+  /// 发送标量设置（保留给协议兼容/测试；正式写入统一走 [applyOps]）。
   Future<bool> set(Map<String, Object?> values) async {
     final reply = await _request({'set': values});
     return reply != null && reply['ok'] == true;
@@ -228,11 +287,6 @@ class PrefsBridgeClient {
 
   Future<bool> remove(List<String> keys) async {
     final reply = await _request({'remove': keys});
-    return reply != null && reply['ok'] == true;
-  }
-
-  Future<bool> ops(List<Map<String, dynamic>> ops) async {
-    final reply = await _request({'ops': ops});
     return reply != null && reply['ok'] == true;
   }
 
@@ -254,13 +308,18 @@ class PrefsBridgeClient {
   }
 
   Future<Map<String, dynamic>?> _request(Map<String, Object?> payload) async {
-    // 两次尝试：第一次（重新）读取端点 → 连接失败/会话不匹配时，
-    // 再读一次端点（主窗口可能刚重启）后重试。
+    // 两次尝试：第一次读取端点 → 连接失败/会话不匹配时重读端点再试一次。
     for (var attempt = 0; attempt < 2; attempt++) {
       final endpoint = await _readEndpoint();
+      if (endpointFile != null && endpoint == null) {
+        // 端点缺失/损坏：进入离线队列，不使用固定端口兜底。
+        return null;
+      }
       final targetPort = endpoint?.port ?? port;
-      final body = Map<String, Object?>.from(payload);
-      if (endpoint != null) body['session'] = endpoint.session;
+      final body = <String, Object?>{
+        ...payload,
+        if (endpoint != null) 'session': endpoint.session,
+      };
       final reply = await _rawRequest(targetPort, body);
       if (reply == null) {
         if (attempt == 0) {
@@ -269,7 +328,8 @@ class PrefsBridgeClient {
         }
         return null;
       }
-      if (reply['error'] == 'session_mismatch') {
+      final error = reply['error'];
+      if (error == 'session_mismatch' || error == 'session_required') {
         if (attempt == 0) {
           await Future<void>.delayed(const Duration(milliseconds: 150));
           continue;

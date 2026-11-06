@@ -66,6 +66,8 @@ Future<void> main(List<String> args) async {
     onSet: (key, value) => DatabaseService().applyRemoteSet(key, value),
     onRemove: (key) => DatabaseService().applyRemoteSet(key, null),
     onOps: (ops) => DatabaseService().applyRemoteOps(ops),
+    validatePayload:
+        (payload) async => DatabaseService().validateRemotePayload(payload),
     endpointFile: endpointFile,
   );
 
