@@ -33,7 +33,6 @@ class DatabaseService {
   static const String _favoritesKey = 'favorites_v1';
   static const String _favoritesTombstonesKey = 'favorites_tombstones_v1';
   static const String _favoritesVersionsKey = 'favorites_versions_v1';
-  static const String _favoritesReplayGuardsKey = 'favorites_replay_guards_v1';
   static const String _historyKey = 'history_v1';
   static const String _historyTombstonesKey = 'history_tombstones_v1';
   static const String _historyClearAtKey = 'history_clear_at_v1';
@@ -115,7 +114,6 @@ class DatabaseService {
   /// 单条超过协议上限、无法经配置桥发送的操作。
   /// 不静默丢弃：写入独立的 `.oversized.json` 日志，主进程启动回放时本地应用。
   final List<Map<String, dynamic>> _oversizedOps = [];
-  Future<void> _oversizedJournalChain = Future<void>.value();
   String? _lastSyncError;
 
   /// 播放器进程内已确认/已提交的弹幕映射（含删除哨兵 null）。
@@ -265,7 +263,10 @@ class DatabaseService {
   bool _isValidHistoryItem(Object? raw) {
     if (raw is! Map) return false;
     if (raw['videoId'] is! String || raw['title'] is! String) return false;
-    if (DateTime.tryParse('${raw['watchedAt']}') == null) return false;
+    final watchedAt = raw['watchedAt'];
+    if (watchedAt is! String || DateTime.tryParse(watchedAt) == null) {
+      return false;
+    }
     if (raw['cover'] != null && raw['cover'] is! String) return false;
     // sourceId 会被 HistoryItem.fromJson 强转为 String?，必须先校验类型。
     if (raw['sourceId'] != null && raw['sourceId'] is! String) return false;
@@ -320,7 +321,8 @@ class DatabaseService {
       if (raw[key] != null && raw[key] is! String) return false;
     }
     final updatedAt = raw['updatedAt'];
-    if (updatedAt != null && DateTime.tryParse('$updatedAt') == null) {
+    if (updatedAt != null &&
+        (updatedAt is! String || DateTime.tryParse(updatedAt) == null)) {
       return false;
     }
     final episodes = raw['episodes'];
@@ -342,7 +344,8 @@ class DatabaseService {
       if (raw[key] != null && raw[key] is! String) return false;
     }
     final updatedAt = raw['updatedAt'];
-    if (updatedAt != null && DateTime.tryParse('$updatedAt') == null) {
+    if (updatedAt != null &&
+        (updatedAt is! String || DateTime.tryParse(updatedAt) == null)) {
       return false;
     }
     return true;
@@ -423,20 +426,21 @@ class DatabaseService {
         return changed;
       }
     }
-    for (final op in ops) {
-      final opId = op['opId'];
-      final hasOpId = opId is String && opId.isNotEmpty;
-      if (hasOpId && _appliedOpIds.contains(opId)) {
-        // 服务端已应用、客户端响应丢失后的重试：只回确认，不重复写入。
-        final key = _keyForOp(op);
+    await _enqueueWrite(() async {
+      for (final op in ops) {
+        final opId = op['opId'];
+        final hasOpId = opId is String && opId.isNotEmpty;
+        if (hasOpId && _appliedOpIds.contains(opId)) {
+          // 重传与原请求共用写入队列。只有成功的操作才能跳过重复执行。
+          final key = _keyForOp(op);
+          if (key != null) changed.add(key);
+          continue;
+        }
+        final key = await _applyOpLocal(op);
+        if (hasOpId) _rememberOpId(opId);
         if (key != null) changed.add(key);
-        continue;
       }
-      final key = await _applyOpLocal(op);
-      // 只有真正执行成功后才记录 opId；执行失败的操作必须允许重试。
-      if (hasOpId) _rememberOpId(opId);
-      if (key != null) changed.add(key);
-    }
+    });
     return changed;
   }
 
@@ -478,47 +482,45 @@ class DatabaseService {
         final raw = op['item'];
         if (raw is! Map) return null;
         final item = HistoryItem.fromJson(raw.cast<String, dynamic>());
-        await _enqueueWrite(() => _saveHistoryLocal(item));
+        await _saveHistoryLocal(item);
         return _historyKey;
       case 'history.remove':
         final videoId = op['videoId'];
         if (videoId is! String) return null;
-        await _enqueueWrite(() => _removeHistoryLocal(videoId, at: at));
+        await _removeHistoryLocal(videoId, at: at);
         return _historyKey;
       case 'history.clear':
-        await _enqueueWrite(() => _clearHistoryLocal(at: at));
+        await _clearHistoryLocal(at: at);
         return _historyKey;
       case 'favorites.add':
         final raw = op['item'];
         if (raw is! Map) return null;
         final video = VideoModel.fromJson(raw.cast<String, dynamic>());
-        await _enqueueWrite(() => _addFavoriteLocal(video, at: at));
+        await _addFavoriteLocal(video, at: at);
         return _favoritesKey;
       case 'favorites.remove':
         final videoId = op['videoId'];
         if (videoId is! String) return null;
-        await _enqueueWrite(() => _removeFavoriteLocal(videoId, at: at));
+        await _removeFavoriteLocal(videoId, at: at);
         return _favoritesKey;
       case 'search.upsert':
         final query = op['query'];
         if (query is! String) return null;
-        await _enqueueWrite(() => _addSearchHistoryLocal(query));
+        await _addSearchHistoryLocal(query);
         return _searchHistoryKey;
       case 'search.clear':
-        await _enqueueWrite(_clearSearchHistoryLocal);
+        await _clearSearchHistoryLocal();
         return _searchHistoryKey;
       case 'danmaku.map.set':
         final key = op['key'];
         final value = op['value'];
         if (key is! String || value is! Map) return null;
-        await _enqueueWrite(
-          () => _setDanmakuMappingLocal(key, value.cast<String, dynamic>()),
-        );
+        await _setDanmakuMappingLocal(key, value.cast<String, dynamic>());
         return _danmakuMappingKey;
       case 'danmaku.map.remove':
         final key = op['key'];
         if (key is! String) return null;
-        await _enqueueWrite(() => _removeDanmakuMappingLocal(key));
+        await _removeDanmakuMappingLocal(key);
         return _danmakuMappingKey;
       case 'set':
         final key = op['key'];
@@ -567,20 +569,17 @@ class DatabaseService {
           final raw = await source.readAsString();
           final decoded = jsonDecode(raw);
           if (decoded is List) {
-            final typedOps = <Map<String, dynamic>>[];
             for (final op in decoded) {
-              if (op is Map) typedOps.add(op.cast<String, dynamic>());
-            }
-            // 先记录回放保护，再应用：即使应用/删除日志过程中崩溃，
-            // 后续删除标记回收也不会漏掉这些旧 add。
-            await _recordFavoriteReplayGuards(typedOps);
-            for (final typed in typedOps) {
+              if (op is! Map) continue;
+              final typed = op.cast<String, dynamic>();
               final error = _validateOp(typed);
               if (error != null) {
                 debugPrint('跳过非法离线操作 $error: $typed');
                 continue;
               }
-              await _applyOpLocal(typed);
+              await _enqueueWrite(() async {
+                await _applyOpLocal(typed);
+              });
             }
           }
           await source.delete();
@@ -636,7 +635,7 @@ class DatabaseService {
     if (bridge == null || _flushing || _pendingOps.isEmpty) return;
     _flushing = true;
     try {
-      await _quarantineOversizedOps();
+      if (!await _quarantineOversizedOps()) return;
       while (_pendingOps.isNotEmpty) {
         final batch = _takeNextBatch();
         if (batch.isEmpty) break;
@@ -657,25 +656,29 @@ class DatabaseService {
       utf8.encode(jsonEncode(op)).length + 32;
 
   /// 把超过单条协议上限的操作移出正常队列并持久化，避免队首操作永久阻塞。
-  Future<void> _quarantineOversizedOps() async {
-    if (_pendingOps.isEmpty) return;
-    final oversized = <Map<String, dynamic>>[];
-    _pendingOps.removeWhere((op) {
-      if (_serializedOpBytes(op) > maxSingleOpBytes) {
-        oversized.add(op);
-        return true;
-      }
+  Future<bool> _quarantineOversizedOps() async {
+    final oversized =
+        _pendingOps
+            .where((op) => _serializedOpBytes(op) > maxSingleOpBytes)
+            .toSet();
+    if (oversized.isEmpty) return true;
+    try {
+      // 普通日志保留这些操作，直到超限日志的替代副本成功落盘。
+      await _writeOversizedSnapshot([..._oversizedOps, ...oversized]);
+    } on FileSystemException catch (error) {
+      _lastSyncError = '保存超大操作日志失败，将重试: $error';
+      debugPrint(_lastSyncError);
       return false;
-    });
-    if (oversized.isEmpty) return;
+    }
     _oversizedOps.addAll(oversized);
+    _pendingOps.removeWhere(oversized.contains);
     _lastSyncError =
         '有 ${oversized.length} 条操作超过单条协议上限'
         '（${(maxSingleOpBytes / 1024).round()}KB），已转入待恢复队列；'
         '主进程启动时会本地回放，不影响其余写入';
     debugPrint(_lastSyncError);
     await _persistJournal();
-    await _persistOversizedJournal();
+    return true;
   }
 
   Future<Directory?> _resolveJournalDir() async {
@@ -704,76 +707,6 @@ class DatabaseService {
     return File('${dir.path}${Platform.pathSeparator}$_journalFileName');
   }
 
-  /// 扫描仍可回放的离线日志，收集其中出现的收藏 ID。
-  ///
-  /// 删除标记（tombstone）的回收必须与“旧日志还能不能回放”一致：只要日志
-  /// 里还有某个作品的旧 `favorites.add`，就不能淘汰它的删除标记，否则主进程
-  /// 重启回放会把已取消的收藏重新插回来。
-  ///
-  /// 返回 `complete == false` 表示至少有一个日志读不出来（被占用/损坏/目录
-  /// 不可访问），调用方必须保守地放弃本轮回收。
-  Future<({Set<String> ids, bool complete})>
-  _favoriteIdsInPendingJournals() async {
-    final dir = await _resolveJournalDir();
-    if (dir == null) {
-      return (ids: <String>{}, complete: false);
-    }
-    final ids = <String>{};
-    var complete = true;
-    try {
-      await for (final entity in dir.list(followLinks: false)) {
-        if (entity is! File) continue;
-        final name = entity.path.split(Platform.pathSeparator).last;
-        if (!name.endsWith('.json') && !name.endsWith('.processing')) {
-          continue;
-        }
-        try {
-          final decoded = jsonDecode(await entity.readAsString());
-          if (decoded is! List) {
-            complete = false;
-            continue;
-          }
-          for (final op in decoded) {
-            if (op is! Map) continue;
-            if (op['op'] != 'favorites.add') continue;
-            final item = op['item'];
-            if (item is! Map) continue;
-            final id = item['id'];
-            if (id is String && id.isNotEmpty) ids.add(id);
-          }
-        } catch (_) {
-          // 日志暂时读不到（Windows 独占/损坏）：本轮不能据此回收标记。
-          complete = false;
-        }
-      }
-    } catch (_) {
-      complete = false;
-    }
-    return (ids: ids, complete: complete);
-  }
-
-  /// 记录“这条旧日志已经被回放过”。存活播放器可能再次重写整份日志，
-  /// 即使文件已被删除也要让删除标记继续覆盖这些作品 ID。
-  Future<void> _recordFavoriteReplayGuards(
-    Iterable<Map<String, dynamic>> ops,
-  ) async {
-    final ids = <String>{};
-    for (final op in ops) {
-      if (op['op'] != 'favorites.add') continue;
-      final item = op['item'];
-      if (item is! Map) continue;
-      final id = item['id'];
-      if (id is String && id.isNotEmpty) ids.add(id);
-    }
-    if (ids.isEmpty) return;
-    final guards = _loadTimestampMap(_favoritesReplayGuardsKey);
-    final now = DateTime.now();
-    for (final id in ids) {
-      guards[id] = now;
-    }
-    await _saveTimestampMap(_favoritesReplayGuardsKey, guards, limit: 5000);
-  }
-
   /// 串行化 journal 快照写入：并发调用不会共用临时文件或互相删除。
   Future<void> _persistJournal() {
     final next = _journalChain.then((_) => _writeJournalSnapshot());
@@ -783,44 +716,30 @@ class DatabaseService {
     return _journalChain;
   }
 
-  /// 超大操作使用独立日志文件（主进程启动回放时会本地应用并删除）。
-  Future<void> _persistOversizedJournal() {
-    final next = _oversizedJournalChain.then((_) => _writeOversizedSnapshot());
-    _oversizedJournalChain = next.catchError((Object e) {
-      debugPrint('保存超大操作日志失败: $e');
-    });
-    return _oversizedJournalChain;
-  }
-
-  File? _oversizedJournalFile() {
-    final dir = _journalDir;
-    if (dir == null) return null;
-    return File(
+  Future<void> _writeOversizedSnapshot(
+    List<Map<String, dynamic>> snapshot,
+  ) async {
+    final dir = await _resolveJournalDir();
+    if (dir == null) {
+      throw FileSystemException('无法获取离线日志目录');
+    }
+    final file = File(
       '${dir.path}${Platform.pathSeparator}pending_ops.$pid.oversized.json',
     );
+    await _replaceJournal(file, snapshot);
   }
 
-  Future<void> _writeOversizedSnapshot() async {
-    final dir = await _resolveJournalDir();
-    if (dir == null) return;
-    final file = _oversizedJournalFile();
-    if (file == null) return;
-    final snapshot = List<Map<String, dynamic>>.from(_oversizedOps);
+  Future<void> _replaceJournal(
+    File file,
+    List<Map<String, dynamic>> snapshot,
+  ) async {
+    final temporary = File('${file.path}.${_newId()}.tmp');
     try {
-      if (snapshot.isEmpty) {
-        if (await file.exists()) await file.delete();
-        return;
-      }
-      final tmp = File('${file.path}.${_newId()}.tmp');
-      await tmp.writeAsString(jsonEncode(snapshot), flush: true);
-      try {
-        await tmp.rename(file.path);
-      } on FileSystemException {
-        if (await file.exists()) await file.delete();
-        await tmp.rename(file.path);
-      }
-    } catch (e) {
-      debugPrint('保存超大操作日志失败: $e');
+      await temporary.writeAsString(jsonEncode(snapshot), flush: true);
+      await temporary.rename(file.path);
+    } on FileSystemException {
+      if (await temporary.exists()) await temporary.delete();
+      rethrow;
     }
   }
 
@@ -835,15 +754,7 @@ class DatabaseService {
         if (await file.exists()) await file.delete();
         return;
       }
-      final tmp = File('${file.path}.${_newId()}.tmp');
-      await tmp.writeAsString(jsonEncode(snapshot), flush: true);
-      try {
-        await tmp.rename(file.path);
-      } on FileSystemException {
-        // Windows 上目标存在时 rename 可能失败；串行化后删除再改名是安全的。
-        if (await file.exists()) await file.delete();
-        await tmp.rename(file.path);
-      }
+      await _replaceJournal(file, snapshot);
     } catch (e) {
       debugPrint('保存离线操作失败: $e');
     }
@@ -1076,29 +987,13 @@ class DatabaseService {
   }
 
   Future<void> _saveFavoriteTombstones(Map<String, DateTime> tombstones) async {
-    // 只有在需要裁掉删除标记时才扫描日志；被日志/已回放日志引用的收藏 ID
-    // 必须保留标记，保证旧日志（普通或超大、可能被存活播放器重写）回放时
-    // 仍受删除版本约束。
-    if (tombstones.length <= 500) {
-      await _saveTimestampMap(_favoritesTombstonesKey, tombstones);
-      return;
-    }
-    final scan = await _favoriteIdsInPendingJournals();
-    if (!scan.complete) {
-      // 有日志暂时读不到：本轮不回收，保留全部删除标记。
-      await _saveTimestampMap(
-        _favoritesTombstonesKey,
-        tombstones,
-        keepIds: tombstones.keys.toSet(),
-        limit: tombstones.length > 500 ? tombstones.length : 500,
-      );
-      return;
-    }
-    final guards = _loadTimestampMap(_favoritesReplayGuardsKey);
-    await _saveTimestampMap(
+    // 只保存每个已取消作品的最后版本。旧客户端可能在任意时间回放，
+    // 因此删除版本要保留到同一作品被更新的操作重新收藏为止。
+    await _store?.setString(
       _favoritesTombstonesKey,
-      tombstones,
-      keepIds: {...scan.ids, ...guards.keys},
+      jsonEncode(
+        tombstones.map((id, at) => MapEntry(id, at.toIso8601String())),
+      ),
     );
   }
 
@@ -1123,7 +1018,6 @@ class DatabaseService {
     String key,
     Map<String, DateTime> values, {
     Set<String> keepIds = const <String>{},
-    int limit = 500,
   }) async {
     final prefs = _store;
     if (prefs == null) return;
@@ -1136,7 +1030,7 @@ class DatabaseService {
       if (value != null) selected[id] = value;
     }
     for (final entry in entries) {
-      if (selected.length >= limit) break;
+      if (selected.length >= 500) break;
       selected.putIfAbsent(entry.key, () => entry.value);
     }
     await prefs.setString(
@@ -1534,7 +1428,6 @@ class DatabaseService {
     _writeChain = Future<void>.value();
     _writeZone = null;
     _journalChain = Future<void>.value();
-    _oversizedJournalChain = Future<void>.value();
     _appliedOpIds.clear();
     _appliedOpOrder.clear();
   }
