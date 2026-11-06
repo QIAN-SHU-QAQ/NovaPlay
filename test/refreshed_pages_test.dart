@@ -9,6 +9,7 @@ import 'package:nova_play/features/search/search_screen.dart';
 import 'package:nova_play/models/bangumi_info.dart';
 import 'package:nova_play/models/video_model.dart';
 import 'package:nova_play/providers/bangumi_provider.dart';
+import 'package:nova_play/services/bangumi_api.dart';
 import 'package:nova_play/providers/favorites_provider.dart';
 import 'package:nova_play/providers/theme_provider.dart';
 import 'package:nova_play/providers/video_provider.dart';
@@ -170,9 +171,11 @@ void main() {
             bangumiInfoProvider(
               BangumiQuery(videoId: video.id, title: video.title),
             ).overrideWith(
-              (ref) async => const BangumiInfo(
-                score: 8.2,
-                staff: [BangumiStaffEntry(role: '导演', name: '制作测试')],
+              (ref) async => const BangumiLookupResult.success(
+                BangumiInfo(
+                  score: 8.2,
+                  staff: [BangumiStaffEntry(role: '导演', name: '制作测试')],
+                ),
               ),
             ),
           ],

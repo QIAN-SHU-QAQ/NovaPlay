@@ -216,4 +216,51 @@ void main() {
 
     expect(await api.fetchInfo('QA 样本'), isNull);
   });
+
+  test('P1：搜索网络失败返回不可用（详情页可重试），而不是无匹配', () async {
+    final adapter = _FakeAdapter({
+      '/v0/search/subjects': (500, {'error': 'timeout'}),
+    });
+    final api = _api(adapter);
+
+    final result = await api.lookup('QA 样本');
+    expect(result.status, BangumiLookupStatus.unavailable);
+    expect(result.info, isNull);
+  });
+
+  test('P1：空候选返回无匹配（详情页可手选）', () async {
+    final adapter = _FakeAdapter({
+      '/v0/search/subjects': (200, _searchResponse(const [])),
+    });
+    final api = _api(adapter);
+
+    final result = await api.lookup('QA 样本');
+    expect(result.status, BangumiLookupStatus.noMatch);
+    expect(result.info, isNull);
+  });
+
+  test('P1：主体可用但角色接口失败时返回部分资料', () async {
+    final adapter = _FakeAdapter({
+      '/v0/subjects/5': (200, _subjectResponse(5)),
+      '/v0/subjects/5/characters': (500, {'error': 'server error'}),
+    });
+    final api = _api(adapter);
+
+    final result = await api.lookup('QA 样本', subjectId: 5);
+    expect(result.status, BangumiLookupStatus.success);
+    expect(result.partial, isTrue);
+    expect(result.info!.score, 8.6);
+    expect(result.info!.staff, isNotEmpty);
+    expect(result.info!.characters, isEmpty);
+  });
+
+  test('P1：主体接口失败返回不可用', () async {
+    final adapter = _FakeAdapter({
+      '/v0/subjects/6': (500, {'error': 'server error'}),
+    });
+    final api = _api(adapter);
+
+    final result = await api.lookup('QA 样本', subjectId: 6);
+    expect(result.status, BangumiLookupStatus.unavailable);
+  });
 }
