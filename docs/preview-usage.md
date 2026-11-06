@@ -20,7 +20,7 @@
 
 ## 已知限制
 
-- 第三方片源可能失效；失效地址续播会自动尝试刷新详情，仍失败时请回到作品详情重新选集。
+- 续播会尝试刷新详情。当前 Windows 在线验收发现，播放器有时从片头附近开始并覆盖原进度。遇到起点错误时，可在作品详情重新选集并手动定位。[项目状态与验收](https://github.com/QIAN-SHU-QAQ/NovaPlay/blob/main/docs/reviews/2026-11-06-online-acceptance-next-phase.md)
 - 弹幕需要自备弹弹play AppId/AppSecret（设置 → 弹幕）；匹配不准时可在播放器里使用「手动匹配弹幕」。
 - 下载仅支持未加密、完整 TS 的 HLS VOD；fMP4/BYTERANGE/独立音轨/直播会被明确拒绝。
 - 预览包未做代码签名，Windows SmartScreen 可能提示「未知发布者」，请核对 ZIP 的 SHA-256 后再运行。
