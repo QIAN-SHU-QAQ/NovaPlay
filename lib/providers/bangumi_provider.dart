@@ -1,6 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../models/bangumi_info.dart';
 import '../services/bangumi_api.dart';
 import '../services/database_service.dart';
 
@@ -21,17 +20,16 @@ class BangumiQuery {
   int get hashCode => Object.hash(videoId, title);
 }
 
-/// 拉取 Bangumi 元数据；失败/无结果返回 null（详情页静默降级双栏）。
+/// 拉取 Bangumi 元数据；返回区分「成功 / 无匹配 / 不可用」的结果，
+/// 详情页据此展示资料、手选入口或可重试的降级提示。
 ///
 /// R7：手动关联按**完整视频 ID** 保存与读取；自动匹配由 [BangumiApi]
 /// 按相似度/季数排序并拒绝无法唯一确认的候选（不再取搜索首项）。
-final bangumiInfoProvider = FutureProvider.family<BangumiInfo?, BangumiQuery>((
-  ref,
-  query,
-) {
-  final mapping = DatabaseService().getBangumiMapping(query.videoId);
-  final subjectId = mapping?['subjectId'];
-  return ref
-      .read(bangumiApiProvider)
-      .fetchInfo(query.title, subjectId: subjectId is int ? subjectId : null);
-});
+final bangumiInfoProvider =
+    FutureProvider.family<BangumiLookupResult, BangumiQuery>((ref, query) {
+      final mapping = DatabaseService().getBangumiMapping(query.videoId);
+      final subjectId = mapping?['subjectId'];
+      return ref
+          .read(bangumiApiProvider)
+          .lookup(query.title, subjectId: subjectId is int ? subjectId : null);
+    });
