@@ -10,6 +10,9 @@ class HistoryNotifier extends StateNotifier<List<HistoryItem>> {
   Future<void> record(HistoryItem item) async {
     final db = DatabaseService();
     await db.saveHistory(item);
+    // 播放器 dispose 时可能触发最后一次落盘；ProviderScope 已销毁时
+    // 只写入存储，不再更新已 dispose 的 StateNotifier。
+    if (!mounted) return;
     state = db.getHistory();
   }
 
