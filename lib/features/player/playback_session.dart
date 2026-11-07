@@ -9,9 +9,11 @@ import 'package:media_kit/media_kit.dart';
 ///   不再使用「open() 返回后立刻 seek()」的不可靠路径；
 /// - open() 返回不代表目标位置已经生效。在收到时长/连续位置事件确认
 ///   抵达目标之前，会话保持 [resumePending]，调用方（历史写入）必须暂停；
-/// - 确认失败、取消或快速切集时保留最后一次已确认进度，绝不把 0/5 秒的
-///   初始位置写回历史；
-/// - 用户主动拖动/从头播放属于明确意图，直接以新位置作为已确认进度。
+/// - 目标不可达（媒体时长不足 / 确认超时 / 未确认就结束）视为可恢复失败：
+///   保留最后一次已确认进度、阻塞历史写入与自动切集，并允许重试/从头播放；
+/// - 用户主动 seek 先进入 [seekPending]，只有媒体实际位置抵达新目标后才
+///   接受新进度，避免「seek 请求已发出、实际还在 5 秒」时写错历史；
+/// - 迟到的旧媒体错误在请求切换期间不得终止新请求。
 class PlaybackSession extends ChangeNotifier {
   PlaybackSession({
     required this.player,
@@ -21,19 +23,17 @@ class PlaybackSession extends ChangeNotifier {
     this.episodes,
     this.index = 0,
     this.startAt = 0,
+    this.resumeTimeout = const Duration(seconds: 20),
+    this.seekTimeout = const Duration(seconds: 8),
   }) {
     _resumeTarget = Duration(seconds: startAt);
     _confirmedPosition = _resumeTarget;
     _errorSubscription = player.stream.error.listen((message) {
       if (_closed || _activeRequest != _request || message.isEmpty) return;
+      // 新请求正在加载时收到的错误可能来自上一段媒体，不能终止新请求。
+      if (loading) return;
       debugPrint('PlaybackSession 媒体错误: $message');
-      error = message;
-      ready = false;
-      loading = false;
-      // 失败时保留原始续播目标；位置归零/推进都不算确认。
-      _resumePending = false;
-      _resumeWindowHits = 0;
-      notifyListeners();
+      _failResume(message);
     });
     _bufferSubscription = player.stream.buffering.listen((value) {
       if (_closed || _activeRequest != _request) return;
@@ -46,12 +46,7 @@ class PlaybackSession extends ChangeNotifier {
         _handlePendingPosition(value);
         return;
       }
-      // A failing demuxer may emit zero before stream.error; retain the last
-      // useful position rather than losing the user's progress on retry.
-      if (value > Duration.zero) {
-        _confirmedPosition = value;
-        _resumeTarget = value;
-      }
+      _handleActivePosition(value);
     });
   }
   final Player player;
@@ -67,6 +62,15 @@ class PlaybackSession extends ChangeNotifier {
   /// 续播目标允许的后置误差：关键帧可能落在目标之后几秒。
   static const Duration resumeToleranceAfter = Duration(seconds: 5);
 
+  /// 用户 seek 实际生效的判定窗口。
+  static const Duration seekTolerance = Duration(seconds: 3);
+
+  /// 续播确认超时：超时后按可恢复失败处理，保留原进度。
+  final Duration resumeTimeout;
+
+  /// 用户 seek 生效超时：超时后放弃本次 seek 的进度确认，保留原进度。
+  final Duration seekTimeout;
+
   int index;
   bool loading = false;
   bool ready = false;
@@ -76,7 +80,7 @@ class PlaybackSession extends ChangeNotifier {
   int _activeRequest = 0;
   bool _closed = false;
 
-  /// 当前请求/重试应使用的起点。确认前保持原始续播目标，确认后跟随进度。
+  /// 当前请求/重试应使用的起点。确认前保持目标，确认后跟随进度。
   late Duration _resumeTarget;
 
   /// 最后一次被确认的播放进度（未被确认的 0/5 秒不会覆盖它）。
@@ -84,7 +88,14 @@ class PlaybackSession extends ChangeNotifier {
 
   /// 续播目标是否仍在等待媒体层确认。
   bool _resumePending = false;
+  bool _resumeFailed = false;
   int _resumeWindowHits = 0;
+
+  /// 用户主动 seek 的目标；非空表示等待媒体实际抵达。
+  Duration? _pendingSeekTarget;
+
+  Timer? _resumeTimer;
+  Timer? _seekTimer;
   bool _hasSwitched = false;
   Future<void> _tail = Future.value();
   Future<void>? _closing;
@@ -92,7 +103,7 @@ class PlaybackSession extends ChangeNotifier {
   late final StreamSubscription<bool> _bufferSubscription;
   late final StreamSubscription<Duration> _positionSubscription;
 
-  /// 续播目标（秒）。
+  /// 当前请求/重试应使用的起点。
   Duration get resumeTarget => _resumeTarget;
 
   /// 最后一次已确认进度；历史写入应以此为准。
@@ -100,6 +111,12 @@ class PlaybackSession extends ChangeNotifier {
 
   /// 续播是否仍在等待确认；为 true 时不得写入历史。
   bool get resumePending => _resumePending;
+
+  /// 续播是否已确认失败（可重试或从头播放）；为 true 时不得写入历史/自动切集。
+  bool get resumeFailed => _resumeFailed;
+
+  /// 用户 seek 是否尚未被媒体实际位置确认；为 true 时不得写入历史。
+  bool get seekPending => _pendingSeekTarget != null;
 
   String get title {
     final list = episodes;
@@ -131,7 +148,16 @@ class PlaybackSession extends ChangeNotifier {
     buffering = false;
     error = null;
     _resumeWindowHits = 0;
+    _resumeFailed = false;
+    _pendingSeekTarget = null;
+    _cancelTimers();
     _resumePending = target > Duration.zero;
+    if (_resumePending) {
+      _resumeTimer = Timer(resumeTimeout, () {
+        if (_closed || request != _request || !_resumePending) return;
+        _failResume('续播起点在 ${resumeTimeout.inSeconds} 秒内未能确认，请重试或从头播放');
+      });
+    }
     notifyListeners();
     _tail = _tail.then((_) async {
       if (_closed || request != _request) return;
@@ -149,6 +175,15 @@ class PlaybackSession extends ChangeNotifier {
         await player.setRate(rate);
         if (_closed || request != _request || error != null) return;
         ready = true;
+        final duration = player.state.duration;
+        if (_resumePending &&
+            duration > Duration.zero &&
+            duration < target - resumeToleranceBefore) {
+          _failResume(
+            '媒体时长 ${duration.inSeconds} 秒，短于续播点 ${target.inSeconds} 秒',
+          );
+          return;
+        }
         if (_resumePending) {
           // 某些后端会在 open() 返回前已把位置放到目标附近。
           _handlePendingPosition(player.state.position);
@@ -162,9 +197,7 @@ class PlaybackSession extends ChangeNotifier {
       } catch (e) {
         debugPrint('PlaybackSession 打开失败: $e');
         if (!_closed && request == _request) {
-          error = e.toString();
-          ready = false;
-          _resumePending = false;
+          _failResume(e.toString());
         }
       } finally {
         if (!_closed && request == _request) {
@@ -177,6 +210,14 @@ class PlaybackSession extends ChangeNotifier {
   }
 
   void _handlePendingPosition(Duration value) {
+    final duration = player.state.duration;
+    if (duration > Duration.zero &&
+        duration < _resumeTarget - resumeToleranceBefore) {
+      _failResume(
+        '媒体时长 ${duration.inSeconds} 秒，短于续播点 ${_resumeTarget.inSeconds} 秒',
+      );
+      return;
+    }
     if (!_isWithinResumeWindow(value)) {
       _resumeWindowHits = 0;
       return;
@@ -184,10 +225,10 @@ class PlaybackSession extends ChangeNotifier {
     _resumeWindowHits++;
     // 时长已知且足够长时，一次落在窗口内的位置即可确认；
     // 时长未知时要求连续两次位置事件，避免把偶发位置当成加载完成。
-    final duration = player.state.duration;
     final durationConfirms =
         duration > Duration.zero && duration >= _resumeTarget;
     if (!durationConfirms && _resumeWindowHits < 2) return;
+    _resumeTimer?.cancel();
     _resumePending = false;
     _resumeWindowHits = 0;
     _confirmedPosition = value;
@@ -195,10 +236,56 @@ class PlaybackSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _handleActivePosition(Duration value) {
+    final pendingSeek = _pendingSeekTarget;
+    if (pendingSeek != null) {
+      if ((value - pendingSeek).abs() <= seekTolerance) {
+        _seekTimer?.cancel();
+        _pendingSeekTarget = null;
+        _confirmedPosition = value;
+        _resumeTarget = value;
+        notifyListeners();
+      }
+      // seek 生效前忽略其它位置事件，尤其不能把旧位置写进历史。
+      return;
+    }
+    // 正常播放只接受向前推进；偶发的 0/5 秒回退不覆盖已确认进度。
+    if (value >= _confirmedPosition && value > Duration.zero) {
+      _confirmedPosition = value;
+      _resumeTarget = value;
+    }
+  }
+
   bool _isWithinResumeWindow(Duration value) {
     if (value < _resumeTarget - resumeToleranceBefore) return false;
     if (value > _resumeTarget + resumeToleranceAfter) return false;
     return true;
+  }
+
+  /// 媒体结束/确认超时/时长不足等不可恢复条件：保留原进度并允许重试。
+  void _failResume(String message) {
+    _cancelTimers();
+    _resumePending = false;
+    _resumeFailed = true;
+    _pendingSeekTarget = null;
+    ready = false;
+    loading = false;
+    error = message;
+    notifyListeners();
+  }
+
+  /// 播放器结束时调用：续播尚未确认说明目标不可达，阻止自动切集。
+  void markResumeUnreachable(String reason) {
+    if (_closed) return;
+    if (!_resumePending && !_resumeFailed) return;
+    _failResume(reason);
+  }
+
+  void _cancelTimers() {
+    _resumeTimer?.cancel();
+    _resumeTimer = null;
+    _seekTimer?.cancel();
+    _seekTimer = null;
   }
 
   Future<void> switchEpisode(int value) {
@@ -211,31 +298,53 @@ class PlaybackSession extends ChangeNotifier {
     _resumeTarget = Duration.zero;
     _confirmedPosition = Duration.zero;
     _resumePending = false;
+    _resumeFailed = false;
     _resumeWindowHits = 0;
+    _pendingSeekTarget = null;
+    _cancelTimers();
     return open();
   }
 
-  /// 用户主动跳转（拖动进度条、±5 秒、从头播放等）。
+  /// 用户主动跳转（拖动进度条、±5 秒等）。
   ///
-  /// 这是明确意图：立即结束待确认状态，并把新位置视为已确认进度，
-  /// 之后历史可以继续写入（包括用户主动拖回更早位置）。
+  /// 不立即放开门禁：先记录目标，等媒体位置真正抵达后再更新已确认进度；
+  /// 超时则放弃本次确认，保留原进度，避免把 seek 前的旧位置写进历史。
   void noteUserSeek(Duration position) {
     if (_closed) return;
     final clamped = position < Duration.zero ? Duration.zero : position;
     _resumePending = false;
+    _resumeFailed = false;
     _resumeWindowHits = 0;
-    _confirmedPosition = clamped;
-    _resumeTarget = clamped;
+    error = null;
+    _pendingSeekTarget = clamped;
+    _seekTimer?.cancel();
+    _seekTimer = Timer(seekTimeout, () {
+      if (_closed || _pendingSeekTarget == null) return;
+      _pendingSeekTarget = null;
+      notifyListeners();
+    });
     notifyListeners();
   }
 
-  /// 明确选择从头播放：允许历史随后保存新位置。
-  void startFromBeginning() => noteUserSeek(Duration.zero);
+  /// 明确选择从头播放：以 0 秒作为新起点重新打开媒体。
+  void startFromBeginning() {
+    if (_closed) return;
+    _resumePending = false;
+    _resumeFailed = false;
+    _resumeWindowHits = 0;
+    _pendingSeekTarget = null;
+    _cancelTimers();
+    _resumeTarget = Duration.zero;
+    _confirmedPosition = Duration.zero;
+    error = null;
+    notifyListeners();
+  }
 
   Future<void> close() {
     if (_closing != null) return _closing!;
     _closed = true;
     ++_request;
+    _cancelTimers();
     _closing = Future.wait([
       _errorSubscription.cancel(),
       _bufferSubscription.cancel(),

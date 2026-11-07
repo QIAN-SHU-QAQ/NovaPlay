@@ -347,6 +347,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// 一集播放结束：按设置决定是否自动切到下一集。
   void _onCompleted(bool completed) {
     if (!completed || !mounted) return;
+    // 续播目标尚未确认或已失败时，媒体提前结束说明目标不可达：
+    // 不能自动切到下一集，否则下一集的 6 秒位置会覆盖原历史进度。
+    if (_session.resumePending || _session.resumeFailed) {
+      _session.markResumeUnreachable('媒体在续播起点前结束，无法确认续播位置');
+      return;
+    }
     if (!ref.read(playerSettingsProvider).autoPlayNext) return;
     final episodes = widget.episodes;
     if (episodes == null) return;
@@ -382,16 +388,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _recordHistory() {
     final videoId = widget.videoId;
     if (!_session.ready || _session.loading) return;
-    // 续播起点还在等待媒体层确认时不得写历史：0/5 秒的初始位置会把
-    // 用户原来的 180 秒进度覆盖掉。确认失败/取消同样保持旧进度。
-    if (_session.resumePending) return;
+    // 续播起点还在等待确认、已确认失败，或用户 seek 尚未生效时都不得写
+    // 历史：0/5 秒的初始位置或 seek 前的旧位置会把用户原进度覆盖掉。
+    if (_session.resumePending ||
+        _session.resumeFailed ||
+        _session.seekPending) {
+      return;
+    }
     if (videoId == null || videoId.isEmpty) return;
     final snapshots = _episodeModels;
     if (snapshots == null || snapshots.isEmpty) return;
     if (_currentIndex < 0 || _currentIndex >= snapshots.length) return;
 
-    final state = _player.state;
-    if (state.position.inSeconds < 5) return;
+    // 使用会话确认过的进度，而不是原始播放器位置（可能含瞬时回跳）。
+    final confirmed = _session.confirmedPosition;
+    if (confirmed.inSeconds < 5) return;
 
     unawaited(
       _historyNotifier.record(
@@ -402,8 +413,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           sourceId: widget.sourceId,
           episodes: snapshots,
           episodeIndex: _currentIndex,
-          position: state.position,
-          duration: state.duration,
+          position: confirmed,
+          duration: _player.state.duration,
           watchedAt: DateTime.now(),
         ),
       ),
@@ -706,10 +717,25 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                 style: const TextStyle(color: Colors.white70),
                               ),
                             ),
-                            FilledButton.icon(
-                              onPressed: () => _session.open(),
-                              icon: const Icon(Icons.refresh),
-                              label: const Text('重试'),
+                            Wrap(
+                              spacing: 12,
+                              alignment: WrapAlignment.center,
+                              children: [
+                                FilledButton.icon(
+                                  onPressed: () => _session.open(),
+                                  icon: const Icon(Icons.refresh),
+                                  label: const Text('重试'),
+                                ),
+                                if (_session.resumeFailed)
+                                  OutlinedButton.icon(
+                                    onPressed: () {
+                                      _session.startFromBeginning();
+                                      _session.open();
+                                    },
+                                    icon: const Icon(Icons.restart_alt),
+                                    label: const Text('从头播放'),
+                                  ),
+                              ],
                             ),
                           ],
                         ),
