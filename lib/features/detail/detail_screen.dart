@@ -155,7 +155,16 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
         lookup.status == BangumiLookupStatus.unavailable;
     final noMatch = lookup?.status == BangumiLookupStatus.noMatch;
     final partial = lookup?.partial == true;
-    if (!unavailable && !noMatch && !partial) {
+    final info = lookup?.info;
+    // 只有角色资料（没有评分/制作人员）时，宽屏数据栏与窄屏展开区都不会
+    // 出现手选入口；这里单独提供，避免用户无法纠正或解除已有映射。
+    final incomplete =
+        lookup?.status == BangumiLookupStatus.success &&
+        !partial &&
+        info != null &&
+        info.score == null &&
+        info.staff.isEmpty;
+    if (!unavailable && !noMatch && !partial && !incomplete) {
       return const SizedBox.shrink();
     }
 
@@ -164,13 +173,17 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
             ? 'Bangumi 资料暂不可用'
             : noMatch
             ? '暂无可靠的 Bangumi 匹配'
-            : '部分 Bangumi 资料不可用';
+            : partial
+            ? '部分 Bangumi 资料不可用'
+            : 'Bangumi 资料不完整';
     final subtitle =
         unavailable
             ? '可重试，或手动选择对应条目'
             : noMatch
             ? '可手动选择对应条目'
-            : '评分与制作人员可用，角色资料缺失';
+            : partial
+            ? '评分与制作人员可用，角色资料缺失'
+            : '仅有角色资料，可手动选择条目';
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
