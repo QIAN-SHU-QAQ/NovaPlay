@@ -186,8 +186,9 @@ void main() {
       reason: '续播确认前必须暂停历史写入',
     );
 
-    // 抵达目标后确认，历史才允许向前更新。
+    // 抵达目标后需要连续两次有效位置事件才确认，历史才允许向前更新。
     platform.emitPosition(const Duration(seconds: 181));
+    platform.emitPosition(const Duration(seconds: 182));
     await tester.pump();
     await tester.pump(const Duration(seconds: 6));
     await tester.pumpAndSettle();
@@ -268,6 +269,83 @@ void main() {
     expect(find.text('从头播放'), findsOneWidget);
 
     platform.emitPosition(const Duration(seconds: 119));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 6));
+    platform.emitCompleted();
+    await tester.pumpAndSettle();
+    expect(db.getHistory().single.episodeIndex, 1);
+    expect(db.getHistory().single.position, const Duration(seconds: 180));
+    expect(find.text('Show - Three'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('瞬时命中后提前结束不自动切集，历史保持第 2 集 180 秒', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    addTearDown(db.resetForTest);
+    await db.saveHistory(
+      HistoryItem(
+        videoId: 'v1',
+        title: 'Show',
+        episodes: [
+          EpisodeModel(id: 'ep_1', title: 'One', url: 'u1'),
+          EpisodeModel(id: 'ep_2', title: 'Two', url: 'u2'),
+          EpisodeModel(id: 'ep_3', title: 'Three', url: 'u3'),
+        ],
+        episodeIndex: 1,
+        position: const Duration(seconds: 180),
+        duration: const Duration(seconds: 600),
+        watchedAt: DateTime.now().subtract(const Duration(minutes: 1)),
+      ),
+    );
+
+    final previousFontFetching = GoogleFonts.config.allowRuntimeFetching;
+    GoogleFonts.config.allowRuntimeFetching = false;
+    addTearDown(
+      () => GoogleFonts.config.allowRuntimeFetching = previousFontFetching,
+    );
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final platform =
+        FakePlatform()..mediaDuration = const Duration(seconds: 600);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          playerFactoryProvider.overrideWithValue(
+            () => Player(platformPlayer: platform),
+          ),
+          playerSurfaceProvider.overrideWithValue(
+            (_) => const ColoredBox(color: Colors.black),
+          ),
+        ],
+        child: const MaterialApp(
+          home: PlayerScreen(
+            videoUrl: 'https://example.test/2.m3u8',
+            title: 'Show - Two',
+            videoTitle: 'Show',
+            videoId: 'v1',
+            currentIndex: 1,
+            startAt: 180,
+            episodes: [
+              {'title': 'One', 'url': 'https://example.test/1.m3u8'},
+              {'title': 'Two', 'url': 'https://example.test/2.m3u8'},
+              {'title': 'Three', 'url': 'https://example.test/3.m3u8'},
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 单次 181 秒命中后立刻回落到 5 秒并结束：不能确认，也不能切下一集。
+    platform.emitPosition(const Duration(seconds: 181));
+    platform.emitPosition(const Duration(seconds: 5));
     await tester.pump();
     await tester.pump(const Duration(seconds: 6));
     platform.emitCompleted();

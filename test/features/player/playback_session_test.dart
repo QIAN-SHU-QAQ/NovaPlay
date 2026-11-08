@@ -100,9 +100,10 @@ void main() {
     expect(session.confirmedPosition, const Duration(seconds: 60));
 
     platform.emitPosition(const Duration(seconds: 60));
+    platform.emitPosition(const Duration(seconds: 61));
     await pumpEventQueue();
     expect(session.resumePending, false);
-    expect(session.confirmedPosition, const Duration(seconds: 60));
+    expect(session.confirmedPosition, const Duration(seconds: 61));
   });
 
   test('180 秒续播：确认前保持待完成，确认后历史门禁解除', () async {
@@ -118,9 +119,10 @@ void main() {
     expect(session.confirmedPosition, const Duration(seconds: 180));
 
     platform.emitPosition(const Duration(seconds: 181));
+    platform.emitPosition(const Duration(seconds: 182));
     await pumpEventQueue();
     expect(session.resumePending, false);
-    expect(session.confirmedPosition, const Duration(seconds: 181));
+    expect(session.confirmedPosition, const Duration(seconds: 182));
     expect(platform.starts.single, const Duration(seconds: 180));
   });
 
@@ -250,6 +252,7 @@ void main() {
     session = makeSession(platform, startAt: 180);
     await session.open();
     platform.emitPosition(const Duration(seconds: 181));
+    platform.emitPosition(const Duration(seconds: 182));
     await pumpEventQueue();
     expect(session.resumePending, false);
     // 失败解复用器可能在 error 前把位置重置为 0；不能被当成回退覆盖。
@@ -257,7 +260,7 @@ void main() {
     platform.emitError('connection reset');
     await pumpEventQueue();
     await session.open();
-    expect(platform.starts.last, const Duration(seconds: 181));
+    expect(platform.starts.last, const Duration(seconds: 182));
   });
 
   test('确认后瞬时 0/5 秒事件不能覆盖已确认进度', () async {
@@ -266,11 +269,12 @@ void main() {
     session = makeSession(platform, startAt: 180);
     await session.open();
     platform.emitPosition(const Duration(seconds: 181));
+    platform.emitPosition(const Duration(seconds: 182));
     await pumpEventQueue();
     platform.emitPosition(const Duration(seconds: 5));
     platform.emitPosition(const Duration(seconds: 3));
     await pumpEventQueue();
-    expect(session.confirmedPosition, const Duration(seconds: 181));
+    expect(session.confirmedPosition, const Duration(seconds: 182));
   });
 
   test('快速切集：旧请求不完成新请求，新集从自身起点开始', () async {
@@ -310,18 +314,19 @@ void main() {
   test('用户 seek 未生效前保持门禁，抵达后才接受新进度', () async {
     await session.open();
     platform.emitPosition(const Duration(seconds: 60));
+    platform.emitPosition(const Duration(seconds: 61));
     await pumpEventQueue();
     expect(session.resumePending, false);
-    expect(session.confirmedPosition, const Duration(seconds: 60));
+    expect(session.confirmedPosition, const Duration(seconds: 61));
 
     session.noteUserSeek(const Duration(seconds: 10));
     expect(session.seekPending, true);
-    expect(session.confirmedPosition, const Duration(seconds: 60));
+    expect(session.confirmedPosition, const Duration(seconds: 61));
     // seek 尚未生效：旧的 5 秒位置不能写入。
     platform.emitPosition(const Duration(seconds: 5));
     await pumpEventQueue();
     expect(session.seekPending, true);
-    expect(session.confirmedPosition, const Duration(seconds: 60));
+    expect(session.confirmedPosition, const Duration(seconds: 61));
 
     platform.emitPosition(const Duration(seconds: 10));
     await pumpEventQueue();
@@ -344,11 +349,12 @@ void main() {
     );
     await session.open();
     platform.emitPosition(const Duration(seconds: 60));
+    platform.emitPosition(const Duration(seconds: 61));
     await pumpEventQueue();
     session.noteUserSeek(const Duration(seconds: 200));
     await Future<void>.delayed(const Duration(milliseconds: 120));
     expect(session.seekPending, false);
-    expect(session.confirmedPosition, const Duration(seconds: 60));
+    expect(session.confirmedPosition, const Duration(seconds: 61));
   });
 
   test('从头播放把 0 秒视为明确意图，允许历史写入', () async {
@@ -363,6 +369,34 @@ void main() {
     expect(session.confirmedPosition, Duration.zero);
   });
 
+  test('单次瞬时命中后提前结束：不确认目标，保留原进度', () async {
+    await session.close();
+    platform = FakePlatform();
+    session = makeSession(platform, startAt: 180);
+    await session.open();
+    platform.emitPosition(const Duration(seconds: 181));
+    platform.emitPosition(const Duration(seconds: 5));
+    await pumpEventQueue();
+    expect(session.resumePending, true);
+    session.markResumeUnreachable('媒体在续播起点前结束');
+    expect(session.resumeFailed, true);
+    expect(session.confirmedPosition, const Duration(seconds: 180));
+  });
+
+  test('首个请求加载期间当前媒体错误不会被吞掉', () async {
+    await session.close();
+    platform = FakePlatform()..gate = Completer<void>();
+    session = makeSession(platform, startAt: 0);
+    final opening = session.open();
+    await pumpEventQueue();
+    platform.emitError('HTTP 500 current media');
+    await pumpEventQueue();
+    platform.gate!.complete();
+    await opening;
+    expect(session.error, contains('HTTP 500 current media'));
+    expect(session.ready, false);
+    expect(session.resumeFailed, true);
+  });
   test(
     'close while opening suppresses callbacks and disposes after open',
     () async {

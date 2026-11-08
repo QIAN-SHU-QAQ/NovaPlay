@@ -30,8 +30,13 @@ class PlaybackSession extends ChangeNotifier {
     _confirmedPosition = _resumeTarget;
     _errorSubscription = player.stream.error.listen((message) {
       if (_closed || _activeRequest != _request || message.isEmpty) return;
-      // 新请求正在加载时收到的错误可能来自上一段媒体，不能终止新请求。
-      if (loading) return;
+      // 首个请求加载期间没有旧媒体可排除，错误属于当前媒体，需保留给
+      // 加载完成后的失败提示；换集加载期间的错误可能来自上一段媒体，
+      // 由新请求的 open() 异常/完成结果负责真实失败。
+      if (loading) {
+        if (!_hasOpenedMedia) _pendingLoadError = message;
+        return;
+      }
       debugPrint('PlaybackSession 媒体错误: $message');
       _failResume(message);
     });
@@ -91,6 +96,11 @@ class PlaybackSession extends ChangeNotifier {
   bool _resumeFailed = false;
   int _resumeWindowHits = 0;
 
+  /// 是否已经成功打开过媒体：用于区分「首个请求的当前媒体错误」和
+  /// 「换集加载期间旧媒体的迟到错误」。
+  bool _hasOpenedMedia = false;
+  String? _pendingLoadError;
+
   /// 用户主动 seek 的目标；非空表示等待媒体实际抵达。
   Duration? _pendingSeekTarget;
 
@@ -147,6 +157,7 @@ class PlaybackSession extends ChangeNotifier {
     ready = false;
     buffering = false;
     error = null;
+    _pendingLoadError = null;
     _resumeWindowHits = 0;
     _resumeFailed = false;
     _pendingSeekTarget = null;
@@ -174,6 +185,15 @@ class PlaybackSession extends ChangeNotifier {
         await player.setVolume(volume);
         await player.setRate(rate);
         if (_closed || request != _request || error != null) return;
+        _hasOpenedMedia = true;
+        // 首个请求加载期间若当前媒体已报错，即使 open() 正常返回也要
+        // 保留失败提示和重试入口，不能静默 ready。
+        final loadError = _pendingLoadError;
+        _pendingLoadError = null;
+        if (loadError != null) {
+          _failResume(loadError);
+          return;
+        }
         ready = true;
         final duration = player.state.duration;
         if (_resumePending &&
@@ -223,11 +243,9 @@ class PlaybackSession extends ChangeNotifier {
       return;
     }
     _resumeWindowHits++;
-    // 时长已知且足够长时，一次落在窗口内的位置即可确认；
-    // 时长未知时要求连续两次位置事件，避免把偶发位置当成加载完成。
-    final durationConfirms =
-        duration > Duration.zero && duration >= _resumeTarget;
-    if (!durationConfirms && _resumeWindowHits < 2) return;
+    // 必须连续两次落在目标窗口内的位置事件才确认，避免单次瞬时 181 秒
+    // 命中后媒体立刻结束/回落时把目标当成已确认。
+    if (_resumeWindowHits < 2) return;
     _resumeTimer?.cancel();
     _resumePending = false;
     _resumeWindowHits = 0;
