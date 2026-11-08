@@ -397,6 +397,49 @@ void main() {
     expect(session.ready, false);
     expect(session.resumeFailed, true);
   });
+  test('首播失败后的重试仍保留同一个当前媒体错误', () async {
+    await session.close();
+    platform = FakePlatform()..gate = Completer<void>();
+    session = makeSession(platform, startAt: 0);
+    final opening = session.open();
+    await pumpEventQueue();
+    platform.emitError('HTTP 500 current media');
+    await pumpEventQueue();
+    platform.gate!.complete();
+    await opening;
+    expect(session.error, contains('HTTP 500 current media'));
+    expect(session.ready, false);
+
+    // 重试：相同顺序上报同一个当前媒体错误，仍必须显示失败与重试。
+    platform.gate = Completer<void>();
+    final retry = session.open();
+    await pumpEventQueue();
+    platform.emitError('HTTP 500 current media');
+    await pumpEventQueue();
+    platform.gate!.complete();
+    await retry;
+    expect(session.error, contains('HTTP 500 current media'));
+    expect(session.ready, false);
+    expect(session.resumeFailed, true);
+  });
+
+  test('seek 未生效时媒体结束：进入可恢复失败并保留原进度', () async {
+    await session.close();
+    platform = FakePlatform();
+    session = makeSession(platform, startAt: 180);
+    await session.open();
+    platform.emitPosition(const Duration(seconds: 181));
+    platform.emitPosition(const Duration(seconds: 182));
+    await pumpEventQueue();
+    expect(session.resumePending, false);
+    session.noteUserSeek(const Duration(seconds: 200));
+    expect(session.seekPending, true);
+    session.markResumeUnreachable('媒体在 seek 生效前结束');
+    expect(session.resumeFailed, true);
+    expect(session.seekPending, false);
+    expect(session.ready, false);
+    expect(session.confirmedPosition, const Duration(seconds: 182));
+  });
   test(
     'close while opening suppresses callbacks and disposes after open',
     () async {

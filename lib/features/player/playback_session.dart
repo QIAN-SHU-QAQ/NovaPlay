@@ -185,7 +185,6 @@ class PlaybackSession extends ChangeNotifier {
         await player.setVolume(volume);
         await player.setRate(rate);
         if (_closed || request != _request || error != null) return;
-        _hasOpenedMedia = true;
         // 首个请求加载期间若当前媒体已报错，即使 open() 正常返回也要
         // 保留失败提示和重试入口，不能静默 ready。
         final loadError = _pendingLoadError;
@@ -195,6 +194,9 @@ class PlaybackSession extends ChangeNotifier {
           return;
         }
         ready = true;
+        // 只有真正加载成功过媒体，后续换集加载期间的流错误才按「旧媒体
+        // 迟到错误」隔离；首播失败后的重试仍应保留当前媒体的错误。
+        _hasOpenedMedia = true;
         final duration = player.state.duration;
         if (_resumePending &&
             duration > Duration.zero &&
@@ -292,10 +294,11 @@ class PlaybackSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 播放器结束时调用：续播尚未确认说明目标不可达，阻止自动切集。
+  /// 播放器结束时调用：续播尚未确认或 seek 尚未生效说明目标不可达，
+  /// 阻止自动切集并进入可恢复失败（保留最后一次确认进度）。
   void markResumeUnreachable(String reason) {
     if (_closed) return;
-    if (!_resumePending && !_resumeFailed) return;
+    if (!_resumePending && !_resumeFailed && !seekPending) return;
     _failResume(reason);
   }
 

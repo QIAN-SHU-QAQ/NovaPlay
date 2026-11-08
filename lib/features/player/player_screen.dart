@@ -347,10 +347,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// 一集播放结束：按设置决定是否自动切到下一集。
   void _onCompleted(bool completed) {
     if (!completed || !mounted) return;
-    // 续播目标尚未确认或已失败时，媒体提前结束说明目标不可达：
-    // 不能自动切到下一集，否则下一集的 6 秒位置会覆盖原历史进度。
-    if (_session.resumePending || _session.resumeFailed) {
-      _session.markResumeUnreachable('媒体在续播起点前结束，无法确认续播位置');
+    // 续播目标尚未确认、已失败，或用户 seek 尚未生效时，媒体结束说明
+    // 无法确认新进度：不能自动切到下一集，否则下一集的 6 秒位置会覆盖
+    // 原历史进度。
+    if (_session.resumePending ||
+        _session.resumeFailed ||
+        _session.seekPending) {
+      _session.markResumeUnreachable(
+        _session.seekPending ? '媒体在 seek 生效前结束，无法确认新进度' : '媒体在续播起点前结束，无法确认续播位置',
+      );
       return;
     }
     if (!ref.read(playerSettingsProvider).autoPlayNext) return;
