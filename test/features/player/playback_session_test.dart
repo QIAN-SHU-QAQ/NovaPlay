@@ -546,6 +546,36 @@ void main() {
     expect(session.error, contains('Failed to recognize file format.'));
     expect(session.resumeFailed, true);
   });
+  test('无归属加载错误后新集出现位置事件：按旧错误清除待定', () async {
+    await session.close();
+    platform = FakePlatform();
+    session = makeSession(
+      platform,
+      startAt: 0,
+      ambiguousErrorGrace: const Duration(milliseconds: 80),
+    );
+    await session.open();
+    expect(session.ready, true);
+
+    platform.mediaDuration = Duration.zero;
+    platform.gate = Completer<void>();
+    final switching = session.switchEpisode(1);
+    await pumpEventQueue();
+    platform.emitError('Failed to recognize file format.');
+    await pumpEventQueue();
+    platform.gate!.complete();
+    await switching;
+    expect(session.ambiguousLoadErrorPending, true);
+
+    platform.emitPosition(const Duration(seconds: 1));
+    await pumpEventQueue();
+    expect(session.ambiguousLoadErrorPending, false);
+    expect(session.ready, true);
+    expect(session.error, isNull);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(session.ready, true);
+    expect(session.error, isNull);
+  });
   test(
     'close while opening suppresses callbacks and disposes after open',
     () async {
