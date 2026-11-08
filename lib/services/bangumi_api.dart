@@ -32,6 +32,28 @@ class BangumiSubjectCandidate {
 /// - 相似度低于阈值时返回 null，避免错误关联；
 /// - 角色接口失败时仍返回评分/制作人员（部分降级）；
 /// - 支持调用方传入已确认的 subjectId（手动纠正/缓存复用）。
+/// Bangumi 查询结果状态：区分「成功」「无可靠匹配」和「服务不可用」，
+/// 详情页据此分别展示资料、手选入口或可重试的降级提示。
+enum BangumiLookupStatus { success, noMatch, unavailable }
+
+class BangumiLookupResult {
+  const BangumiLookupResult._(this.status, {this.info, this.partial = false});
+
+  const BangumiLookupResult.success(BangumiInfo info, {bool partial = false})
+    : this._(BangumiLookupStatus.success, info: info, partial: partial);
+
+  const BangumiLookupResult.noMatch() : this._(BangumiLookupStatus.noMatch);
+
+  const BangumiLookupResult.unavailable()
+    : this._(BangumiLookupStatus.unavailable);
+
+  final BangumiLookupStatus status;
+  final BangumiInfo? info;
+
+  /// 评分/制作人员可用，但角色接口失败时为 true。
+  final bool partial;
+}
+
 class BangumiApi {
   BangumiApi({Dio? dio})
     : _dio =
@@ -151,39 +173,60 @@ class BangumiApi {
   }
 
   /// 拉取 Bangumi 资料；[subjectId] 非空时直接使用该条目（手动纠正/缓存）。
-  Future<BangumiInfo?> fetchInfo(String title, {int? subjectId}) async {
-    try {
-      int? resolvedId = subjectId;
-      String? matchedTitle;
-      if (resolvedId == null) {
-        final candidates = await searchSubjects(title);
-        if (candidates.isEmpty) return null;
-        final best = candidates.first;
-        if (best.score < minMatchScore) {
-          debugPrint(
-            'BangumiApi: 标题相似度不足（${best.score.toStringAsFixed(2)}），'
-            '跳过自动匹配：$title',
-          );
-          return null;
-        }
-        // 无法唯一确认时（并列候选、同名不同年份等）不自动选首项，
-        // 交给详情页手动匹配，避免把另一部作品的资料关联过来。
-        if (candidates.length > 1 &&
-            (best.score - candidates[1].score).abs() < 0.05) {
-          debugPrint(
-            'BangumiApi: 候选无法唯一确定（${best.displayTitle} / '
-            '${candidates[1].displayTitle}），跳过自动匹配：$title',
-          );
-          return null;
-        }
-        resolvedId = best.subjectId;
-        matchedTitle = best.displayTitle;
+  /// 查询 Bangumi 资料并区分失败原因。
+  ///
+  /// - 搜索/主体接口网络失败 → [BangumiLookupStatus.unavailable]（详情页可重试）；
+  /// - 无候选、相似度不足、季号冲突或无法唯一确定 → [BangumiLookupStatus.noMatch]（详情页可手选）；
+  /// - 主体成功但角色接口失败 → success + partial=true（保留评分/制作人员）。
+  Future<BangumiLookupResult> lookup(String title, {int? subjectId}) async {
+    var resolvedId = subjectId;
+    String? matchedTitle;
+    if (resolvedId == null) {
+      final List<BangumiSubjectCandidate> candidates;
+      try {
+        candidates = await searchSubjects(title);
+      } catch (e) {
+        debugPrint('BangumiApi 搜索失败，资料不可用: $e');
+        return const BangumiLookupResult.unavailable();
       }
-      return await _fetchSubjectInfo(resolvedId, matchedTitle: matchedTitle);
-    } catch (e) {
-      debugPrint('BangumiApi fetchInfo failed: $e');
-      return null;
+      if (candidates.isEmpty) {
+        return const BangumiLookupResult.noMatch();
+      }
+      final best = candidates.first;
+      if (best.score < minMatchScore) {
+        debugPrint(
+          'BangumiApi: 标题相似度不足（${best.score.toStringAsFixed(2)}），'
+          '跳过自动匹配：$title',
+        );
+        return const BangumiLookupResult.noMatch();
+      }
+      // 无法唯一确认时（并列候选、同名不同年份等）不自动选首项，
+      // 交给详情页手动匹配，避免把另一部作品的资料关联过来。
+      if (candidates.length > 1 &&
+          (best.score - candidates[1].score).abs() < 0.05) {
+        debugPrint(
+          'BangumiApi: 候选无法唯一确定（${best.displayTitle} / '
+          '${candidates[1].displayTitle}），跳过自动匹配：$title',
+        );
+        return const BangumiLookupResult.noMatch();
+      }
+      resolvedId = best.subjectId;
+      matchedTitle = best.displayTitle;
     }
+
+    final fetched = await _fetchSubjectInfo(
+      resolvedId,
+      matchedTitle: matchedTitle,
+    );
+    final info = fetched.info;
+    if (info == null) return const BangumiLookupResult.unavailable();
+    return BangumiLookupResult.success(info, partial: fetched.charactersFailed);
+  }
+
+  /// 兼容旧调用：成功返回资料，无匹配/不可用返回 null。
+  Future<BangumiInfo?> fetchInfo(String title, {int? subjectId}) async {
+    final result = await lookup(title, subjectId: subjectId);
+    return result.info;
   }
 
   /// 提取季号（第N季 / Season N / Nth Season），无法确定返回 null。
@@ -230,7 +273,7 @@ class BangumiApi {
     return tens * 10 + ones;
   }
 
-  Future<BangumiInfo?> _fetchSubjectInfo(
+  Future<({BangumiInfo? info, bool charactersFailed})> _fetchSubjectInfo(
     int subjectId, {
     String? matchedTitle,
   }) async {
@@ -239,11 +282,12 @@ class BangumiApi {
       final subject = subjectResponse.data;
       if (subject is! Map<String, dynamic>) {
         debugPrint('BangumiApi: subject 返回格式异常');
-        return null;
+        return (info: null, charactersFailed: false);
       }
 
       // 角色接口独立降级：失败时只保留评分/制作人员。
       var charactersRaw = const <dynamic>[];
+      var charactersFailed = false;
       try {
         final charactersResponse = await _dio.get(
           '/v0/subjects/$subjectId/characters',
@@ -251,6 +295,7 @@ class BangumiApi {
         final data = charactersResponse.data;
         if (data is List) charactersRaw = data;
       } catch (e) {
+        charactersFailed = true;
         debugPrint('BangumiApi: 获取角色失败，降级为部分资料: $e');
       }
 
@@ -280,50 +325,61 @@ class BangumiApi {
       }
 
       // 角色 + 声优
+      // 解析校验也属于降级边界：actors 等字段格式异常时只丢弃角色资料，
+      // 已取得的评分/制作人员必须保留，不能让整个 lookup 变成不可用。
       final characters = <BangumiCharacter>[];
-      for (final raw in charactersRaw.take(12)) {
-        if (raw is! Map) continue;
-        final name = raw['name']?.toString();
-        if (name == null || name.isEmpty) continue;
-        final images = raw['images'];
-        final actors = (raw['actors'] as List?) ?? const [];
-        String? cv;
-        for (final actor in actors) {
-          if (actor is Map &&
-              actor['name'] != null &&
-              actor['name'].toString().isNotEmpty) {
-            // 优先中文配音名
-            if (actor['lang'] == 'cn') {
-              cv = actor['name'].toString();
-              break;
+      try {
+        for (final raw in charactersRaw.take(12)) {
+          if (raw is! Map) continue;
+          final name = raw['name']?.toString();
+          if (name == null || name.isEmpty) continue;
+          final images = raw['images'];
+          final actors = (raw['actors'] as List?) ?? const [];
+          String? cv;
+          for (final actor in actors) {
+            if (actor is Map &&
+                actor['name'] != null &&
+                actor['name'].toString().isNotEmpty) {
+              // 优先中文配音名
+              if (actor['lang'] == 'cn') {
+                cv = actor['name'].toString();
+                break;
+              }
+              cv ??= actor['name'].toString();
             }
-            cv ??= actor['name'].toString();
           }
+          characters.add(
+            BangumiCharacter(
+              name: name,
+              imageUrl:
+                  images is Map
+                      ? (images['medium']?.toString() ??
+                          images['large']?.toString())
+                      : null,
+              cv: cv,
+            ),
+          );
         }
-        characters.add(
-          BangumiCharacter(
-            name: name,
-            imageUrl:
-                images is Map
-                    ? (images['medium']?.toString() ??
-                        images['large']?.toString())
-                    : null,
-            cv: cv,
-          ),
-        );
+      } catch (e) {
+        charactersFailed = true;
+        characters.clear();
+        debugPrint('BangumiApi: 解析角色失败，降级为部分资料: $e');
       }
 
-      return BangumiInfo(
-        subjectId: subjectId,
-        matchedTitle: matchedTitle,
-        score: score,
-        scoreCount: scoreCount,
-        staff: staff,
-        characters: characters,
+      return (
+        info: BangumiInfo(
+          subjectId: subjectId,
+          matchedTitle: matchedTitle,
+          score: score,
+          scoreCount: scoreCount,
+          staff: staff,
+          characters: characters,
+        ),
+        charactersFailed: charactersFailed,
       );
     } catch (e) {
       debugPrint('BangumiApi subject detail failed: $e');
-      return null;
+      return (info: null, charactersFailed: false);
     }
   }
 

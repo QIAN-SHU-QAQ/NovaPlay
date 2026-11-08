@@ -84,7 +84,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
   // ---------- 三栏布局 ----------
 
   Widget _buildThreeColumns(VideoModel video) {
-    final bangumi =
+    final bangumiLookup =
         ref
             .watch(
               bangumiInfoProvider(
@@ -92,6 +92,7 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
               ),
             )
             .valueOrNull;
+    final bangumi = bangumiLookup?.info;
     final showDataColumn =
         bangumi != null && (bangumi.score != null || bangumi.staff.isNotEmpty);
 
@@ -118,6 +119,122 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
     );
   }
 
+  /// Bangumi 资料状态与手动匹配入口。
+  ///
+  /// 无论自动匹配为空、资料服务不可用还是角色接口部分降级，这里都能显示
+  /// 可操作的提示；宽/窄布局共用，避免窄屏只能在数据栏里找到手选入口。
+  Widget _buildBangumiStatus(VideoModel video) {
+    final query = BangumiQuery(videoId: video.id, title: video.title);
+    final async = ref.watch(bangumiInfoProvider(query));
+    final lookup = async.valueOrNull;
+    final colors = Theme.of(context).colorScheme;
+
+    if (async.isLoading && lookup == null) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              '正在加载 Bangumi 资料…',
+              style: TextStyle(color: colors.onSurfaceVariant, fontSize: 12),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final unavailable =
+        async.hasError ||
+        lookup == null ||
+        lookup.status == BangumiLookupStatus.unavailable;
+    final noMatch = lookup?.status == BangumiLookupStatus.noMatch;
+    final partial = lookup?.partial == true;
+    final info = lookup?.info;
+    // 只有角色资料（没有评分/制作人员）时，宽屏数据栏与窄屏展开区都不会
+    // 出现手选入口；这里单独提供，避免用户无法纠正或解除已有映射。
+    final incomplete =
+        lookup?.status == BangumiLookupStatus.success &&
+        !partial &&
+        info != null &&
+        info.score == null &&
+        info.staff.isEmpty;
+    if (!unavailable && !noMatch && !partial && !incomplete) {
+      return const SizedBox.shrink();
+    }
+
+    final title =
+        unavailable
+            ? 'Bangumi 资料暂不可用'
+            : noMatch
+            ? '暂无可靠的 Bangumi 匹配'
+            : partial
+            ? '部分 Bangumi 资料不可用'
+            : 'Bangumi 资料不完整';
+    final subtitle =
+        unavailable
+            ? '可重试，或手动选择对应条目'
+            : noMatch
+            ? '可手动选择对应条目'
+            : partial
+            ? '评分与制作人员可用，角色资料缺失'
+            : '仅有角色资料，可手动选择条目';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Card(
+        margin: EdgeInsets.zero,
+        color: colors.surfaceContainerLow,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 10, 10),
+          child: Row(
+            children: [
+              Icon(
+                Icons.info_outline,
+                size: 18,
+                color: colors.onSurfaceVariant,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (unavailable)
+                TextButton(
+                  onPressed: () => ref.invalidate(bangumiInfoProvider(query)),
+                  child: const Text('重试'),
+                ),
+              TextButton.icon(
+                onPressed: () => _showBangumiMatchDialog(video.id, video.title),
+                icon: const Icon(Icons.tune, size: 16),
+                label: const Text('手动匹配'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
   // ---------- 海报列 ----------
 
   Widget _buildPosterColumn(VideoModel video) {
@@ -304,6 +421,9 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
             ),
           const SizedBox(height: 24),
 
+          // Bangumi 资料状态 / 手动匹配入口（窄布局、空匹配、不可用时也可达）
+          _buildBangumiStatus(video),
+
           // 选集
           if (episodes.isNotEmpty) ...[
             Row(
@@ -364,6 +484,12 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
                     title: Text(entry.name),
                     subtitle: Text(entry.role),
                   ),
+                ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.tune, size: 18),
+                  title: const Text('资料不准确？手动匹配'),
+                  onTap: () => _showBangumiMatchDialog(video.id, video.title),
+                ),
               ],
             ),
           ],
@@ -544,7 +670,8 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
       context: context,
       builder:
           (_) => BangumiMatchDialog(
-            future: api.searchSubjects(title),
+            search: (query) => api.searchSubjects(query),
+            initialQuery: title,
             title: title,
             hasExistingMapping: existing != null,
             existingLabel: existing?['name']?.toString(),
