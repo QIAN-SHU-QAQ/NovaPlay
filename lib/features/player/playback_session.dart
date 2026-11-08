@@ -25,6 +25,7 @@ class PlaybackSession extends ChangeNotifier {
     this.startAt = 0,
     this.resumeTimeout = const Duration(seconds: 20),
     this.seekTimeout = const Duration(seconds: 8),
+    this.ambiguousErrorGrace = const Duration(milliseconds: 1500),
   }) {
     _resumeTarget = Duration(seconds: startAt);
     _confirmedPosition = _resumeTarget;
@@ -53,7 +54,11 @@ class PlaybackSession extends ChangeNotifier {
           _pendingLoadError = message;
           return;
         }
-        debugPrint('PlaybackSession 忽略无法归属的加载期错误: $message');
+        // 换集加载期、无法归属媒体身份的错误（如 libmpv 的
+        // "Failed to recognize file format." 或只含分片路径）可能来自旧
+        // 媒体：先记录为待定错误，等新集是否出现成功加载证据再决定。
+        debugPrint('PlaybackSession 记录待归属的加载期错误: $message');
+        _ambiguousLoadError = message;
         return;
       }
       debugPrint('PlaybackSession 媒体错误: $message');
@@ -66,6 +71,12 @@ class PlaybackSession extends ChangeNotifier {
     });
     _positionSubscription = player.stream.position.listen((value) {
       if (_closed || _activeRequest != _request || loading || !ready) return;
+      // 新集已经开始出位置：说明此前的无归属错误来自旧媒体，清除待定。
+      if (_ambiguousLoadError != null) {
+        _ambiguousErrorTimer?.cancel();
+        _ambiguousLoadError = null;
+        notifyListeners();
+      }
       if (_resumePending) {
         _handlePendingPosition(value);
         return;
@@ -95,6 +106,10 @@ class PlaybackSession extends ChangeNotifier {
   /// 用户 seek 生效超时：超时后放弃本次 seek 的进度确认，保留原进度。
   final Duration seekTimeout;
 
+  /// 无法归属的加载期错误等待「新集成功加载证据」的有界窗口；
+  /// 超时仍无证据时转入可重试失败，避免误报就绪。
+  final Duration ambiguousErrorGrace;
+
   int index;
   bool loading = false;
   bool ready = false;
@@ -119,6 +134,9 @@ class PlaybackSession extends ChangeNotifier {
   String? _previousOpenedUrl;
   String? _pendingLoadError;
 
+  /// 无法归属媒体身份、可能是旧媒体的加载期错误；等待新集加载证据。
+  String? _ambiguousLoadError;
+
   /// 用户 seek 是否取代了尚未确认的续播；超时后要恢复保护而不是放行。
   bool _seekReplacedResume = false;
 
@@ -127,6 +145,7 @@ class PlaybackSession extends ChangeNotifier {
 
   Timer? _resumeTimer;
   Timer? _seekTimer;
+  Timer? _ambiguousErrorTimer;
   bool _hasSwitched = false;
   Future<void> _tail = Future.value();
   Future<void>? _closing;
@@ -148,6 +167,9 @@ class PlaybackSession extends ChangeNotifier {
 
   /// 用户 seek 是否尚未被媒体实际位置确认；为 true 时不得写入历史。
   bool get seekPending => _pendingSeekTarget != null;
+
+  /// 是否有无法归属、仍在等待新集加载证据的加载期错误。
+  bool get ambiguousLoadErrorPending => _ambiguousLoadError != null;
 
   String get title {
     final list = episodes;
@@ -179,6 +201,8 @@ class PlaybackSession extends ChangeNotifier {
     buffering = false;
     error = null;
     _pendingLoadError = null;
+    _ambiguousLoadError = null;
+    _ambiguousErrorTimer?.cancel();
     _resumeWindowHits = 0;
     _resumeFailed = false;
     _pendingSeekTarget = null;
@@ -217,6 +241,20 @@ class PlaybackSession extends ChangeNotifier {
         }
         _previousOpenedUrl = url;
         ready = true;
+        final ambiguous = _ambiguousLoadError;
+        if (ambiguous != null) {
+          if (player.state.duration > Duration.zero) {
+            _ambiguousLoadError = null;
+          } else {
+            _ambiguousErrorTimer?.cancel();
+            _ambiguousErrorTimer = Timer(ambiguousErrorGrace, () {
+              if (_closed || request != _request) return;
+              final pending = _ambiguousLoadError;
+              _ambiguousLoadError = null;
+              if (pending != null) _failResume(pending);
+            });
+          }
+        }
         final duration = player.state.duration;
         if (_resumePending &&
             duration > Duration.zero &&
@@ -306,6 +344,8 @@ class PlaybackSession extends ChangeNotifier {
   /// 媒体结束/确认超时/时长不足等不可恢复条件：保留原进度并允许重试。
   void _failResume(String message) {
     _cancelTimers();
+    _ambiguousErrorTimer?.cancel();
+    _ambiguousLoadError = null;
     _resumePending = false;
     _resumeFailed = true;
     _pendingSeekTarget = null;
@@ -320,7 +360,12 @@ class PlaybackSession extends ChangeNotifier {
   /// 阻止自动切集并进入可恢复失败（保留最后一次确认进度）。
   void markResumeUnreachable(String reason) {
     if (_closed) return;
-    if (!_resumePending && !_resumeFailed && !seekPending) return;
+    if (!_resumePending &&
+        !_resumeFailed &&
+        !seekPending &&
+        _ambiguousLoadError == null) {
+      return;
+    }
     _failResume(reason);
   }
 
@@ -329,6 +374,8 @@ class PlaybackSession extends ChangeNotifier {
     _resumeTimer = null;
     _seekTimer?.cancel();
     _seekTimer = null;
+    _ambiguousErrorTimer?.cancel();
+    _ambiguousErrorTimer = null;
   }
 
   Future<void> switchEpisode(int value) {

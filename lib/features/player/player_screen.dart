@@ -352,9 +352,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // 原历史进度。
     if (_session.resumePending ||
         _session.resumeFailed ||
-        _session.seekPending) {
+        _session.seekPending ||
+        _session.ambiguousLoadErrorPending) {
       _session.markResumeUnreachable(
-        _session.seekPending ? '媒体在 seek 生效前结束，无法确认新进度' : '媒体在续播起点前结束，无法确认续播位置',
+        _session.seekPending
+            ? '媒体在 seek 生效前结束，无法确认新进度'
+            : _session.ambiguousLoadErrorPending
+            ? '媒体加载未成功，无法确认播放状态'
+            : '媒体在续播起点前结束，无法确认续播位置',
       );
       return;
     }
@@ -397,7 +402,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // 历史：0/5 秒的初始位置或 seek 前的旧位置会把用户原进度覆盖掉。
     if (_session.resumePending ||
         _session.resumeFailed ||
-        _session.seekPending) {
+        _session.seekPending ||
+        _session.ambiguousLoadErrorPending) {
       return;
     }
     if (videoId == null || videoId.isEmpty) return;

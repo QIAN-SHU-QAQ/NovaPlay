@@ -60,6 +60,7 @@ PlaybackSession makeSession(
   int startAt = 60,
   Duration resumeTimeout = const Duration(seconds: 20),
   Duration seekTimeout = const Duration(seconds: 8),
+  Duration ambiguousErrorGrace = const Duration(milliseconds: 1500),
 }) {
   return PlaybackSession(
     player: Player(platformPlayer: platform),
@@ -73,6 +74,7 @@ PlaybackSession makeSession(
     startAt: startAt,
     resumeTimeout: resumeTimeout,
     seekTimeout: seekTimeout,
+    ambiguousErrorGrace: ambiguousErrorGrace,
   );
 }
 
@@ -518,6 +520,31 @@ void main() {
     expect(session.seekPending, false);
     expect(session.resumeFailed, true);
     expect(session.confirmedPosition, const Duration(seconds: 180));
+  });
+  test('新集无 URL 错误且无成功加载证据：有界转入可重试失败', () async {
+    await session.close();
+    platform = FakePlatform();
+    session = makeSession(
+      platform,
+      startAt: 0,
+      ambiguousErrorGrace: const Duration(milliseconds: 40),
+    );
+    await session.open();
+    expect(session.ready, true);
+
+    // 新集加载期间只收到无 URL 的原生错误，open 正常返回但 duration=0。
+    platform.mediaDuration = Duration.zero;
+    platform.gate = Completer<void>();
+    final switching = session.switchEpisode(1);
+    await pumpEventQueue();
+    platform.emitError('Failed to recognize file format.');
+    await pumpEventQueue();
+    platform.gate!.complete();
+    await switching;
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    expect(session.ready, false);
+    expect(session.error, contains('Failed to recognize file format.'));
+    expect(session.resumeFailed, true);
   });
   test(
     'close while opening suppresses callbacks and disposes after open',
