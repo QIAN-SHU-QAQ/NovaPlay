@@ -30,21 +30,30 @@ class PlaybackSession extends ChangeNotifier {
     _confirmedPosition = _resumeTarget;
     _errorSubscription = player.stream.error.listen((message) {
       if (_closed || _activeRequest != _request || message.isEmpty) return;
-      // 加载期间的错误先按媒体 URL 归属：包含上一媒体 URL 的是迟到旧错误；
-      // 包含当前 URL（或无法归属）的是当前媒体错误，必须保留给失败提示，
-      // 不能因为「曾经成功播放过一集」就一律忽略当前新集的加载失败。
+      // 加载期间的错误按媒体身份归属：
+      // - 明确包含上一媒体 URL → 旧媒体迟到错误，忽略；
+      // - 明确包含当前媒体 URL → 当前请求失败，保留重试；
+      // - 首个请求/失败重试没有旧媒体可排除 → 当前失败；
+      // - 换集加载期、无法归属（如 libmpv 只给
+      //   "Failed to recognize file format." 或仅分片路径）→ 可能是旧媒体
+      //   迟到错误，新集 open 成功时不能据此终止；当前请求真实失败由
+      //   open 异常或加载结束后的错误事件兜底。
       if (loading) {
         final current = currentUrl;
         final previous = _previousOpenedUrl;
-        if (previous != null &&
-            previous.isNotEmpty &&
-            previous != current &&
+        final hasPrevious =
+            previous != null && previous.isNotEmpty && previous != current;
+        if (hasPrevious &&
             message.contains(previous) &&
             !message.contains(current)) {
-          debugPrint('PlaybackSession 忽略旧媒体迟到错误: ');
+          debugPrint('PlaybackSession 忽略旧媒体迟到错误: $message');
           return;
         }
-        _pendingLoadError = message;
+        if (message.contains(current) || !hasPrevious) {
+          _pendingLoadError = message;
+          return;
+        }
+        debugPrint('PlaybackSession 忽略无法归属的加载期错误: $message');
         return;
       }
       debugPrint('PlaybackSession 媒体错误: $message');
@@ -349,7 +358,9 @@ class PlaybackSession extends ChangeNotifier {
     final clamped = position < Duration.zero ? Duration.zero : position;
     // 如果 seek 取代的是尚未确认的续播，超时后必须恢复保护（进入可恢复
     // 失败），不能简单放行后让 completed 自动切集覆盖历史。
-    _seekReplacedResume = _resumePending;
+    // 连续多次 seek 时保留保护：只要其中一次取代了未确认续播，后续
+    // seek 不能把标记覆盖回 false。
+    _seekReplacedResume = _seekReplacedResume || _resumePending;
     _resumePending = false;
     _resumeFailed = false;
     _resumeWindowHits = 0;
@@ -360,7 +371,7 @@ class PlaybackSession extends ChangeNotifier {
       if (_closed || _pendingSeekTarget == null) return;
       if (_seekReplacedResume) {
         _seekReplacedResume = false;
-        _failResume('用户 seek 未在  秒内生效，续播尚未确认，请重试或从头播放');
+        _failResume('用户 seek 未在 ${seekTimeout.inSeconds} 秒内生效，续播尚未确认，请重试或从头播放');
         return;
       }
       _pendingSeekTarget = null;

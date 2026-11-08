@@ -480,6 +480,45 @@ void main() {
     expect(session.error, contains('seek'));
     expect(session.confirmedPosition, const Duration(seconds: 180));
   });
+  test('换集时无 URL 的旧媒体错误不终止新集', () async {
+    await session.open();
+    platform.emitPosition(const Duration(seconds: 60));
+    platform.emitPosition(const Duration(seconds: 61));
+    await pumpEventQueue();
+    expect(session.ready, true);
+
+    platform.gate = Completer<void>();
+    final switching = session.switchEpisode(1);
+    await pumpEventQueue();
+    // libmpv 原生错误可能只有文字，没有媒体 URL。
+    platform.emitError('Failed to recognize file format.');
+    await pumpEventQueue();
+    platform.gate!.complete();
+    await switching;
+    expect(session.ready, true);
+    expect(session.error, isNull);
+  });
+
+  test('连续两次 seek 仍保留未确认续播保护，超时进入失败态', () async {
+    await session.close();
+    platform = FakePlatform();
+    session = makeSession(
+      platform,
+      startAt: 180,
+      seekTimeout: const Duration(milliseconds: 40),
+    );
+    await session.open();
+    platform.emitPosition(const Duration(seconds: 5));
+    await pumpEventQueue();
+    expect(session.resumePending, true);
+    session.noteUserSeek(const Duration(seconds: 10));
+    session.noteUserSeek(const Duration(seconds: 15));
+    expect(session.seekPending, true);
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    expect(session.seekPending, false);
+    expect(session.resumeFailed, true);
+    expect(session.confirmedPosition, const Duration(seconds: 180));
+  });
   test(
     'close while opening suppresses callbacks and disposes after open',
     () async {
