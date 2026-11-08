@@ -30,11 +30,21 @@ class PlaybackSession extends ChangeNotifier {
     _confirmedPosition = _resumeTarget;
     _errorSubscription = player.stream.error.listen((message) {
       if (_closed || _activeRequest != _request || message.isEmpty) return;
-      // 首个请求加载期间没有旧媒体可排除，错误属于当前媒体，需保留给
-      // 加载完成后的失败提示；换集加载期间的错误可能来自上一段媒体，
-      // 由新请求的 open() 异常/完成结果负责真实失败。
+      // 加载期间的错误先按媒体 URL 归属：包含上一媒体 URL 的是迟到旧错误；
+      // 包含当前 URL（或无法归属）的是当前媒体错误，必须保留给失败提示，
+      // 不能因为「曾经成功播放过一集」就一律忽略当前新集的加载失败。
       if (loading) {
-        if (!_hasOpenedMedia) _pendingLoadError = message;
+        final current = currentUrl;
+        final previous = _previousOpenedUrl;
+        if (previous != null &&
+            previous.isNotEmpty &&
+            previous != current &&
+            message.contains(previous) &&
+            !message.contains(current)) {
+          debugPrint('PlaybackSession 忽略旧媒体迟到错误: ');
+          return;
+        }
+        _pendingLoadError = message;
         return;
       }
       debugPrint('PlaybackSession 媒体错误: $message');
@@ -96,10 +106,12 @@ class PlaybackSession extends ChangeNotifier {
   bool _resumeFailed = false;
   int _resumeWindowHits = 0;
 
-  /// 是否已经成功打开过媒体：用于区分「首个请求的当前媒体错误」和
-  /// 「换集加载期间旧媒体的迟到错误」。
-  bool _hasOpenedMedia = false;
+  /// 上一次成功打开过的媒体 URL，用于归属加载期间的迟到错误。
+  String? _previousOpenedUrl;
   String? _pendingLoadError;
+
+  /// 用户 seek 是否取代了尚未确认的续播；超时后要恢复保护而不是放行。
+  bool _seekReplacedResume = false;
 
   /// 用户主动 seek 的目标；非空表示等待媒体实际抵达。
   Duration? _pendingSeekTarget;
@@ -161,6 +173,7 @@ class PlaybackSession extends ChangeNotifier {
     _resumeWindowHits = 0;
     _resumeFailed = false;
     _pendingSeekTarget = null;
+    _seekReplacedResume = false;
     _cancelTimers();
     _resumePending = target > Duration.zero;
     if (_resumePending) {
@@ -193,10 +206,8 @@ class PlaybackSession extends ChangeNotifier {
           _failResume(loadError);
           return;
         }
+        _previousOpenedUrl = url;
         ready = true;
-        // 只有真正加载成功过媒体，后续换集加载期间的流错误才按「旧媒体
-        // 迟到错误」隔离；首播失败后的重试仍应保留当前媒体的错误。
-        _hasOpenedMedia = true;
         final duration = player.state.duration;
         if (_resumePending &&
             duration > Duration.zero &&
@@ -262,6 +273,7 @@ class PlaybackSession extends ChangeNotifier {
       if ((value - pendingSeek).abs() <= seekTolerance) {
         _seekTimer?.cancel();
         _pendingSeekTarget = null;
+        _seekReplacedResume = false;
         _confirmedPosition = value;
         _resumeTarget = value;
         notifyListeners();
@@ -288,6 +300,7 @@ class PlaybackSession extends ChangeNotifier {
     _resumePending = false;
     _resumeFailed = true;
     _pendingSeekTarget = null;
+    _seekReplacedResume = false;
     ready = false;
     loading = false;
     error = message;
@@ -322,6 +335,7 @@ class PlaybackSession extends ChangeNotifier {
     _resumeFailed = false;
     _resumeWindowHits = 0;
     _pendingSeekTarget = null;
+    _seekReplacedResume = false;
     _cancelTimers();
     return open();
   }
@@ -333,6 +347,9 @@ class PlaybackSession extends ChangeNotifier {
   void noteUserSeek(Duration position) {
     if (_closed) return;
     final clamped = position < Duration.zero ? Duration.zero : position;
+    // 如果 seek 取代的是尚未确认的续播，超时后必须恢复保护（进入可恢复
+    // 失败），不能简单放行后让 completed 自动切集覆盖历史。
+    _seekReplacedResume = _resumePending;
     _resumePending = false;
     _resumeFailed = false;
     _resumeWindowHits = 0;
@@ -341,6 +358,11 @@ class PlaybackSession extends ChangeNotifier {
     _seekTimer?.cancel();
     _seekTimer = Timer(seekTimeout, () {
       if (_closed || _pendingSeekTarget == null) return;
+      if (_seekReplacedResume) {
+        _seekReplacedResume = false;
+        _failResume('用户 seek 未在  秒内生效，续播尚未确认，请重试或从头播放');
+        return;
+      }
       _pendingSeekTarget = null;
       notifyListeners();
     });
@@ -354,6 +376,7 @@ class PlaybackSession extends ChangeNotifier {
     _resumeFailed = false;
     _resumeWindowHits = 0;
     _pendingSeekTarget = null;
+    _seekReplacedResume = false;
     _cancelTimers();
     _resumeTarget = Duration.zero;
     _confirmedPosition = Duration.zero;

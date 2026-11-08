@@ -302,7 +302,7 @@ void main() {
     final switching = session.switchEpisode(1);
     await pumpEventQueue();
     // 新请求已经进入 open 等待；此时旧媒体错误到达。
-    platform.emitError('old episode failed');
+    platform.emitError('Failed to open https://example.test/1.m3u8.');
     await pumpEventQueue();
     platform.gate!.complete();
     await switching;
@@ -439,6 +439,46 @@ void main() {
     expect(session.seekPending, false);
     expect(session.ready, false);
     expect(session.confirmedPosition, const Duration(seconds: 182));
+  });
+  test('换集后新集自身的加载错误仍会保留并提示重试', () async {
+    await session.open();
+    platform.emitPosition(const Duration(seconds: 60));
+    platform.emitPosition(const Duration(seconds: 61));
+    await pumpEventQueue();
+    expect(session.ready, true);
+
+    platform.gate = Completer<void>();
+    final switching = session.switchEpisode(1);
+    await pumpEventQueue();
+    // 新集 open 等待期间上报的是新集自己的错误（含当前 URL）。
+    platform.emitError('Failed to open https://example.test/2.m3u8: HTTP 403');
+    await pumpEventQueue();
+    platform.gate!.complete();
+    await switching;
+    expect(session.ready, false);
+    expect(session.error, contains('HTTP 403'));
+    expect(session.resumeFailed, true);
+  });
+
+  test('seek 取代未确认续播且超时：进入可恢复失败而不是放行', () async {
+    await session.close();
+    platform = FakePlatform();
+    session = makeSession(
+      platform,
+      startAt: 180,
+      seekTimeout: const Duration(milliseconds: 40),
+    );
+    await session.open();
+    platform.emitPosition(const Duration(seconds: 5));
+    await pumpEventQueue();
+    expect(session.resumePending, true);
+    session.noteUserSeek(const Duration(seconds: 10));
+    expect(session.seekPending, true);
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    expect(session.seekPending, false);
+    expect(session.resumeFailed, true);
+    expect(session.error, contains('seek'));
+    expect(session.confirmedPosition, const Duration(seconds: 180));
   });
   test(
     'close while opening suppresses callbacks and disposes after open',

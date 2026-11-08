@@ -438,4 +438,88 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
   });
+
+  testWidgets('seek 取代未确认续播后超时，再结束仍不切集/不写历史', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    addTearDown(db.resetForTest);
+    await db.saveHistory(
+      HistoryItem(
+        videoId: 'v1',
+        title: 'Show',
+        episodes: [
+          EpisodeModel(id: 'ep_1', title: 'One', url: 'u1'),
+          EpisodeModel(id: 'ep_2', title: 'Two', url: 'u2'),
+          EpisodeModel(id: 'ep_3', title: 'Three', url: 'u3'),
+        ],
+        episodeIndex: 1,
+        position: const Duration(seconds: 180),
+        duration: const Duration(seconds: 600),
+        watchedAt: DateTime.now().subtract(const Duration(minutes: 1)),
+      ),
+    );
+
+    final previousFontFetching = GoogleFonts.config.allowRuntimeFetching;
+    GoogleFonts.config.allowRuntimeFetching = false;
+    addTearDown(
+      () => GoogleFonts.config.allowRuntimeFetching = previousFontFetching,
+    );
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final platform =
+        FakePlatform()..mediaDuration = const Duration(seconds: 600);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          playerFactoryProvider.overrideWithValue(
+            () => Player(platformPlayer: platform),
+          ),
+          playerSurfaceProvider.overrideWithValue(
+            (_) => const ColoredBox(color: Colors.black),
+          ),
+        ],
+        child: const MaterialApp(
+          home: PlayerScreen(
+            videoUrl: 'https://example.test/2.m3u8',
+            title: 'Show - Two',
+            videoTitle: 'Show',
+            videoId: 'v1',
+            currentIndex: 1,
+            startAt: 180,
+            episodes: [
+              {'title': 'One', 'url': 'https://example.test/1.m3u8'},
+              {'title': 'Two', 'url': 'https://example.test/2.m3u8'},
+              {'title': 'Three', 'url': 'https://example.test/3.m3u8'},
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 续播尚未确认时先报 5 秒，再按右键 seek 到 10 秒（替身不移动位置）。
+    platform.emitPosition(const Duration(seconds: 5));
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(platform.seeks, isNotEmpty);
+
+    // 等待 seek 超时（默认 8 秒），此时应进入可恢复失败。
+    await tester.pump(const Duration(seconds: 9));
+    expect(find.text('播放失败'), findsOneWidget);
+
+    // 超时后再收到 completed：不能自动切集，不能覆盖旧历史。
+    platform.emitCompleted();
+    await tester.pumpAndSettle();
+    expect(db.getHistory().single.episodeIndex, 1);
+    expect(db.getHistory().single.position, const Duration(seconds: 180));
+    expect(find.text('Show - Three'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+  });
 }
