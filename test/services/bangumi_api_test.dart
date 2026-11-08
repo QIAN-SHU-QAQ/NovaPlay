@@ -254,6 +254,30 @@ void main() {
     expect(result.info!.characters, isEmpty);
   });
 
+  test('P2：角色字段格式异常时只降级角色，保留主体评分/制作人员', () async {
+    final adapter = _FakeAdapter({
+      '/v0/subjects/8': (200, _subjectResponse(8)),
+      '/v0/subjects/8/characters': (
+        200,
+        [
+          {
+            'name': 'QA 主角',
+            'images': {},
+            // actors 应为数组，这里故意给对象触发解析异常。
+            'actors': {'name': 'QA CV'},
+          },
+        ],
+      ),
+    });
+    final api = _api(adapter);
+
+    final result = await api.lookup('QA 样本', subjectId: 8);
+    expect(result.status, BangumiLookupStatus.success);
+    expect(result.partial, isTrue);
+    expect(result.info!.score, 8.6);
+    expect(result.info!.staff, isNotEmpty);
+    expect(result.info!.characters, isEmpty);
+  });
   test('P1：主体接口失败返回不可用', () async {
     final adapter = _FakeAdapter({
       '/v0/subjects/6': (500, {'error': 'server error'}),

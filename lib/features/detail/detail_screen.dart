@@ -670,7 +670,8 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
       context: context,
       builder:
           (_) => BangumiMatchDialog(
-            future: api.searchSubjects(title),
+            search: (query) => api.searchSubjects(query),
+            initialQuery: title,
             title: title,
             hasExistingMapping: existing != null,
             existingLabel: existing?['name']?.toString(),

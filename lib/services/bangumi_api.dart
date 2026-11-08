@@ -325,37 +325,45 @@ class BangumiApi {
       }
 
       // 角色 + 声优
+      // 解析校验也属于降级边界：actors 等字段格式异常时只丢弃角色资料，
+      // 已取得的评分/制作人员必须保留，不能让整个 lookup 变成不可用。
       final characters = <BangumiCharacter>[];
-      for (final raw in charactersRaw.take(12)) {
-        if (raw is! Map) continue;
-        final name = raw['name']?.toString();
-        if (name == null || name.isEmpty) continue;
-        final images = raw['images'];
-        final actors = (raw['actors'] as List?) ?? const [];
-        String? cv;
-        for (final actor in actors) {
-          if (actor is Map &&
-              actor['name'] != null &&
-              actor['name'].toString().isNotEmpty) {
-            // 优先中文配音名
-            if (actor['lang'] == 'cn') {
-              cv = actor['name'].toString();
-              break;
+      try {
+        for (final raw in charactersRaw.take(12)) {
+          if (raw is! Map) continue;
+          final name = raw['name']?.toString();
+          if (name == null || name.isEmpty) continue;
+          final images = raw['images'];
+          final actors = (raw['actors'] as List?) ?? const [];
+          String? cv;
+          for (final actor in actors) {
+            if (actor is Map &&
+                actor['name'] != null &&
+                actor['name'].toString().isNotEmpty) {
+              // 优先中文配音名
+              if (actor['lang'] == 'cn') {
+                cv = actor['name'].toString();
+                break;
+              }
+              cv ??= actor['name'].toString();
             }
-            cv ??= actor['name'].toString();
           }
+          characters.add(
+            BangumiCharacter(
+              name: name,
+              imageUrl:
+                  images is Map
+                      ? (images['medium']?.toString() ??
+                          images['large']?.toString())
+                      : null,
+              cv: cv,
+            ),
+          );
         }
-        characters.add(
-          BangumiCharacter(
-            name: name,
-            imageUrl:
-                images is Map
-                    ? (images['medium']?.toString() ??
-                        images['large']?.toString())
-                    : null,
-            cv: cv,
-          ),
-        );
+      } catch (e) {
+        charactersFailed = true;
+        characters.clear();
+        debugPrint('BangumiApi: 解析角色失败，降级为部分资料: $e');
       }
 
       return (

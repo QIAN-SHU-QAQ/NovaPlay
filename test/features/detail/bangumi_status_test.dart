@@ -41,6 +41,25 @@ class _PendingSearchApi extends BangumiApi {
   }
 }
 
+class _QuerySearchApi extends BangumiApi {
+  _QuerySearchApi();
+
+  @override
+  Future<List<BangumiSubjectCandidate>> searchSubjects(String title) async {
+    if (title.contains('另一个')) {
+      return const [
+        BangumiSubjectCandidate(
+          subjectId: 777,
+          name: '另一个作品',
+          nameCn: '另一个作品',
+          score: 0.9,
+        ),
+      ];
+    }
+    return const [];
+  }
+}
+
 void main() {
   Future<void> pumpDetail(
     WidgetTester tester, {
@@ -179,6 +198,31 @@ void main() {
     completer.complete(const []);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
+  });
+  testWidgets('P1：空候选时可在弹窗改关键词搜索并保存关联', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    addTearDown(db.resetForTest);
+
+    await pumpDetail(
+      tester,
+      size: const Size(1440, 1000),
+      result: () => const BangumiLookupResult.noMatch(),
+      api: _QuerySearchApi(),
+    );
+    await tester.tap(find.text('手动匹配'));
+    await tester.pumpAndSettle();
+    expect(find.text('没有找到候选条目'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), '另一个标题');
+    await tester.tap(find.byTooltip('搜索候选'));
+    await tester.pumpAndSettle();
+    expect(find.text('另一个作品'), findsWidgets);
+    await tester.tap(find.text('另一个作品').last);
+    await tester.pumpAndSettle();
+    final mapping = db.getBangumiMapping('detail');
+    expect(mapping?['subjectId'], 777);
   });
   testWidgets('P1：已有关联时手动匹配可恢复自动匹配', (tester) async {
     SharedPreferences.setMockInitialValues({});
