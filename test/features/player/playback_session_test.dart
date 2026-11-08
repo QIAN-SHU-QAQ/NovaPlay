@@ -498,6 +498,11 @@ void main() {
     platform.gate!.complete();
     await switching;
     expect(session.ready, true);
+    expect(session.ambiguousLoadErrorPending, true);
+    // 有效位置推进（>0）才证明新集成功出帧。
+    platform.emitPosition(const Duration(milliseconds: 60));
+    await pumpEventQueue();
+    expect(session.ambiguousLoadErrorPending, false);
     expect(session.error, isNull);
   });
 
@@ -573,6 +578,85 @@ void main() {
     expect(session.ready, true);
     expect(session.error, isNull);
     await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(session.ready, true);
+    expect(session.error, isNull);
+  });
+  test('零秒位置或仅时长元数据不能清除当前媒体的真实错误', () async {
+    await session.close();
+    platform = FakePlatform();
+    session = makeSession(
+      platform,
+      startAt: 0,
+      ambiguousErrorGrace: const Duration(milliseconds: 60),
+    );
+    await session.open();
+    expect(session.ready, true);
+
+    // 对照 A：时长未知，只发一次 0 秒位置。
+    platform.mediaDuration = Duration.zero;
+    platform.gate = Completer<void>();
+    var switching = session.switchEpisode(1);
+    await pumpEventQueue();
+    platform.emitError('Failed to recognize file format.');
+    await pumpEventQueue();
+    platform.gate!.complete();
+    await switching;
+    platform.emitPosition(Duration.zero);
+    await pumpEventQueue();
+    expect(session.ambiguousLoadErrorPending, true);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(session.ready, false);
+    expect(session.error, contains('Failed to recognize file format.'));
+
+    // 对照 B：报告 600 秒时长但位置始终为 0。
+    await session.close();
+    platform = FakePlatform();
+    session = makeSession(
+      platform,
+      startAt: 0,
+      ambiguousErrorGrace: const Duration(milliseconds: 60),
+    );
+    await session.open();
+    expect(session.ready, true);
+    platform.mediaDuration = const Duration(seconds: 600);
+    platform.gate = Completer<void>();
+    switching = session.switchEpisode(1);
+    await pumpEventQueue();
+    platform.emitError('Failed to recognize file format.');
+    await pumpEventQueue();
+    platform.gate!.complete();
+    await switching;
+    platform.emitPosition(Duration.zero);
+    await pumpEventQueue();
+    expect(session.ambiguousLoadErrorPending, true);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(session.ready, false);
+    expect(session.error, contains('Failed to recognize file format.'));
+  });
+
+  test('慢启动但真实推进的媒体不会被有界窗口误判', () async {
+    await session.close();
+    platform = FakePlatform();
+    session = makeSession(
+      platform,
+      startAt: 0,
+      ambiguousErrorGrace: const Duration(seconds: 5),
+    );
+    await session.open();
+    expect(session.ready, true);
+
+    platform.gate = Completer<void>();
+    final switching = session.switchEpisode(1);
+    await pumpEventQueue();
+    platform.emitError('Failed to recognize file format.');
+    await pumpEventQueue();
+    // 模拟正常缓冲：2.6 秒后新集才加载完成并开始推进。
+    await Future<void>.delayed(const Duration(milliseconds: 2600));
+    platform.gate!.complete();
+    await switching;
+    platform.emitPosition(const Duration(milliseconds: 60));
+    await pumpEventQueue();
+    expect(session.ambiguousLoadErrorPending, false);
     expect(session.ready, true);
     expect(session.error, isNull);
   });

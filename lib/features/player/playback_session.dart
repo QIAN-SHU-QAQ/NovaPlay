@@ -25,7 +25,7 @@ class PlaybackSession extends ChangeNotifier {
     this.startAt = 0,
     this.resumeTimeout = const Duration(seconds: 20),
     this.seekTimeout = const Duration(seconds: 8),
-    this.ambiguousErrorGrace = const Duration(milliseconds: 1500),
+    this.ambiguousErrorGrace = const Duration(seconds: 15),
   }) {
     _resumeTarget = Duration(seconds: startAt);
     _confirmedPosition = _resumeTarget;
@@ -72,7 +72,9 @@ class PlaybackSession extends ChangeNotifier {
     _positionSubscription = player.stream.position.listen((value) {
       if (_closed || _activeRequest != _request || loading || !ready) return;
       // 新集已经开始出位置：说明此前的无归属错误来自旧媒体，清除待定。
-      if (_ambiguousLoadError != null) {
+      // 只有「有效位置推进」才能证明当前媒体成功出帧；0 秒重置事件
+      // 或仅有时长元数据都不能清除待定错误。
+      if (_ambiguousLoadError != null && value > Duration.zero) {
         _ambiguousErrorTimer?.cancel();
         _ambiguousLoadError = null;
         notifyListeners();
@@ -243,17 +245,15 @@ class PlaybackSession extends ChangeNotifier {
         ready = true;
         final ambiguous = _ambiguousLoadError;
         if (ambiguous != null) {
-          if (player.state.duration > Duration.zero) {
+          // 时长元数据本身不能证明当前媒体已成功出帧（损坏媒体也可能
+          // 报告时长）；必须等到有效位置推进或有界等待结束。
+          _ambiguousErrorTimer?.cancel();
+          _ambiguousErrorTimer = Timer(ambiguousErrorGrace, () {
+            if (_closed || request != _request) return;
+            final pending = _ambiguousLoadError;
             _ambiguousLoadError = null;
-          } else {
-            _ambiguousErrorTimer?.cancel();
-            _ambiguousErrorTimer = Timer(ambiguousErrorGrace, () {
-              if (_closed || request != _request) return;
-              final pending = _ambiguousLoadError;
-              _ambiguousLoadError = null;
-              if (pending != null) _failResume(pending);
-            });
-          }
+            if (pending != null) _failResume(pending);
+          });
         }
         final duration = player.state.duration;
         if (_resumePending &&
