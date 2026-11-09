@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -600,6 +602,92 @@ void main() {
     expect(db.getHistory().single.episodeIndex, 1);
     expect(db.getHistory().single.position, const Duration(seconds: 180));
     expect(find.text('Show - Three'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+  });
+  testWidgets('旧集 183 秒晚到且新集未播出：历史保持第 2 集 182 秒', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final db = DatabaseService()..resetForTest();
+    await db.init();
+    addTearDown(db.resetForTest);
+    await db.saveHistory(
+      HistoryItem(
+        videoId: 'v1',
+        title: 'Show',
+        episodes: [
+          EpisodeModel(id: 'ep_1', title: 'One', url: 'u1'),
+          EpisodeModel(id: 'ep_2', title: 'Two', url: 'u2'),
+          EpisodeModel(id: 'ep_3', title: 'Three', url: 'u3'),
+        ],
+        episodeIndex: 1,
+        position: const Duration(seconds: 182),
+        duration: const Duration(seconds: 600),
+        watchedAt: DateTime.now().subtract(const Duration(minutes: 1)),
+      ),
+    );
+
+    final previousFontFetching = GoogleFonts.config.allowRuntimeFetching;
+    GoogleFonts.config.allowRuntimeFetching = false;
+    addTearDown(
+      () => GoogleFonts.config.allowRuntimeFetching = previousFontFetching,
+    );
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final platform =
+        FakePlatform()..mediaDuration = const Duration(seconds: 600);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          playerFactoryProvider.overrideWithValue(
+            () => Player(platformPlayer: platform),
+          ),
+          playerSurfaceProvider.overrideWithValue(
+            (_) => const ColoredBox(color: Colors.black),
+          ),
+        ],
+        child: const MaterialApp(
+          home: PlayerScreen(
+            videoUrl: 'https://example.test/2.m3u8',
+            title: 'Show - Two',
+            videoTitle: 'Show',
+            videoId: 'v1',
+            currentIndex: 1,
+            episodes: [
+              {'title': 'One', 'url': 'https://example.test/1.m3u8'},
+              {'title': 'Two', 'url': 'https://example.test/2.m3u8'},
+              {'title': 'Three', 'url': 'https://example.test/3.m3u8'},
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 第 3 集加载：无 URL 错误、open 正常返回但没有时长/有效播放。
+    platform.gate = Completer<void>();
+    platform.mediaDuration = Duration.zero;
+    await tester.tap(find.byTooltip('下一集'));
+    await tester.pump();
+    platform.emitError('Failed to recognize file format.');
+    await tester.pump();
+    platform.gate!.complete();
+    await tester.pumpAndSettle();
+
+    // 第 2 集迟到的 183 秒位置不能当成第 3 集证据。
+    platform.emitPosition(const Duration(seconds: 183));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 16));
+    await tester.pumpAndSettle();
+
+    final history = db.getHistory().single;
+    expect(history.episodeIndex, 1);
+    expect(history.position, const Duration(seconds: 182));
+    expect(find.text('播放失败'), findsOneWidget);
+    expect(find.text('重试'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();

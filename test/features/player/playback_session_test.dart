@@ -660,6 +660,64 @@ void main() {
     expect(session.ready, true);
     expect(session.error, isNull);
   });
+  test('旧集迟到的正位置不能清除失败新集的待定错误', () async {
+    await session.close();
+    platform = FakePlatform();
+    session = makeSession(
+      platform,
+      startAt: 0,
+      ambiguousErrorGrace: const Duration(milliseconds: 60),
+    );
+    await session.open();
+    expect(session.ready, true);
+
+    platform.mediaDuration = Duration.zero;
+    platform.gate = Completer<void>();
+    final switching = session.switchEpisode(1);
+    await pumpEventQueue();
+    platform.emitError('Failed to recognize file format.');
+    await pumpEventQueue();
+    platform.gate!.complete();
+    await switching;
+    expect(session.ambiguousLoadErrorPending, true);
+
+    // 旧集迟到的 183 秒位置（新集目标 0 秒）不能算当前媒体证据。
+    platform.emitPosition(const Duration(seconds: 183));
+    await pumpEventQueue();
+    expect(session.ambiguousLoadErrorPending, true);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(session.ready, false);
+    expect(session.error, contains('Failed to recognize file format.'));
+  });
+
+  test('新集开始播放后，明确属于旧集的迟到错误仍被隔离', () async {
+    await session.open();
+    platform.emitPosition(const Duration(seconds: 60));
+    platform.emitPosition(const Duration(seconds: 61));
+    await pumpEventQueue();
+    expect(session.ready, true);
+
+    platform.gate = Completer<void>();
+    final switching = session.switchEpisode(1);
+    await pumpEventQueue();
+    platform.gate!.complete();
+    await switching;
+    platform.emitPosition(const Duration(seconds: 1));
+    await pumpEventQueue();
+    expect(session.ready, true);
+
+    // 旧集 URL 的迟到错误：新集已 ready 也不能停掉它。
+    platform.emitError('Failed to open https://example.test/1.m3u8.');
+    await pumpEventQueue();
+    expect(session.ready, true);
+    expect(session.error, isNull);
+
+    // 当前集真实报错仍必须可重试。
+    platform.emitError('Failed to open https://example.test/2.m3u8: HTTP 403');
+    await pumpEventQueue();
+    expect(session.ready, false);
+    expect(session.error, contains('HTTP 403'));
+  });
   test(
     'close while opening suppresses callbacks and disposes after open',
     () async {

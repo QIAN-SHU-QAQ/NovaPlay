@@ -31,26 +31,26 @@ class PlaybackSession extends ChangeNotifier {
     _confirmedPosition = _resumeTarget;
     _errorSubscription = player.stream.error.listen((message) {
       if (_closed || _activeRequest != _request || message.isEmpty) return;
-      // 加载期间的错误按媒体身份归属：
-      // - 明确包含上一媒体 URL → 旧媒体迟到错误，忽略；
+      // 加载期间与播放开始后的错误都按媒体身份归属：
+      // - 明确包含被替换媒体 URL → 旧媒体迟到错误，忽略；
       // - 明确包含当前媒体 URL → 当前请求失败，保留重试；
       // - 首个请求/失败重试没有旧媒体可排除 → 当前失败；
       // - 换集加载期、无法归属（如 libmpv 只给
       //   "Failed to recognize file format." 或仅分片路径）→ 可能是旧媒体
       //   迟到错误，新集 open 成功时不能据此终止；当前请求真实失败由
       //   open 异常或加载结束后的错误事件兜底。
+      final current = currentUrl;
+      final superseded = _supersededUrl;
+      final hasSuperseded =
+          superseded != null && superseded.isNotEmpty && superseded != current;
+      if (hasSuperseded &&
+          message.contains(superseded) &&
+          !message.contains(current)) {
+        debugPrint('PlaybackSession 忽略旧媒体迟到错误: $message');
+        return;
+      }
       if (loading) {
-        final current = currentUrl;
-        final previous = _previousOpenedUrl;
-        final hasPrevious =
-            previous != null && previous.isNotEmpty && previous != current;
-        if (hasPrevious &&
-            message.contains(previous) &&
-            !message.contains(current)) {
-          debugPrint('PlaybackSession 忽略旧媒体迟到错误: $message');
-          return;
-        }
-        if (message.contains(current) || !hasPrevious) {
+        if (message.contains(current) || !hasSuperseded) {
           _pendingLoadError = message;
           return;
         }
@@ -71,10 +71,12 @@ class PlaybackSession extends ChangeNotifier {
     });
     _positionSubscription = player.stream.position.listen((value) {
       if (_closed || _activeRequest != _request || loading || !ready) return;
-      // 新集已经开始出位置：说明此前的无归属错误来自旧媒体，清除待定。
-      // 只有「有效位置推进」才能证明当前媒体成功出帧；0 秒重置事件
-      // 或仅有时长元数据都不能清除待定错误。
-      if (_ambiguousLoadError != null && value > Duration.zero) {
+      // 新集已经开始出位置：说明此前的无归属错误可能来自旧媒体。
+      // 只有「当前媒体可归属的有效位置推进」才能清除待定错误：
+      // - 0 秒重置或仅时长元数据不算证据；
+      // - 位置必须落在当前续播目标/起点窗口内，旧集迟到的 183 秒
+      //   （新集目标 0 秒）不能清除失败新集的待定错误。
+      if (_ambiguousLoadError != null && _isValidProgressEvidence(value)) {
         _ambiguousErrorTimer?.cancel();
         _ambiguousLoadError = null;
         notifyListeners();
@@ -134,6 +136,10 @@ class PlaybackSession extends ChangeNotifier {
 
   /// 上一次成功打开过的媒体 URL，用于归属加载期间的迟到错误。
   String? _previousOpenedUrl;
+
+  /// 本次请求开始前正在播放的媒体 URL（被替换媒体）：其迟到错误在
+  /// 新集加载期与开始播放后都应忽略。
+  String? _supersededUrl;
   String? _pendingLoadError;
 
   /// 无法归属媒体身份、可能是旧媒体的加载期错误；等待新集加载证据。
@@ -202,6 +208,7 @@ class PlaybackSession extends ChangeNotifier {
     ready = false;
     buffering = false;
     error = null;
+    _supersededUrl = _previousOpenedUrl;
     _pendingLoadError = null;
     _ambiguousLoadError = null;
     _ambiguousErrorTimer?.cancel();
@@ -339,6 +346,18 @@ class PlaybackSession extends ChangeNotifier {
     if (value < _resumeTarget - resumeToleranceBefore) return false;
     if (value > _resumeTarget + resumeToleranceAfter) return false;
     return true;
+  }
+
+  /// 当前媒体可归属的有效播放证据：必须落在本次请求起点/续播目标窗口内，
+  /// 且不超出已知时长；旧集迟到的正位置（如新集目标 0 时到达 183 秒）
+  /// 不能用来清除失败新集的待定错误。
+  bool _isValidProgressEvidence(Duration value) {
+    if (value <= Duration.zero) return false;
+    final duration = player.state.duration;
+    if (duration > Duration.zero && value > duration + resumeToleranceAfter) {
+      return false;
+    }
+    return _isWithinResumeWindow(value);
   }
 
   /// 媒体结束/确认超时/时长不足等不可恢复条件：保留原进度并允许重试。
